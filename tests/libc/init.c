@@ -817,6 +817,40 @@ static void test_vt(void)
 
 extern void _start(void);
 
+/* scandir()'s filter: no dot entries */
+static int no_dots(const struct dirent *d)
+{
+    return d->d_name[0] != '.';
+}
+
+/* scandir() of a directory with known entries: filtered, sorted, all
+ * freed */
+static int scandir_sorted(void)
+{
+    mkdir("/tmp/sd", 0755);
+
+    const char *names[] = {"c", "a", "b"};
+
+    for (int i = 0; i < 3; ++i) {
+        char path[16] = "/tmp/sd/";
+        strcat(path, names[i]);
+        close(open(path, O_CREAT | O_WRONLY, 0644));
+    }
+
+    struct dirent **list;
+    int n = scandir("/tmp/sd", &list, no_dots, alphasort);
+    int ok = n == 3 && !strcmp(list[0]->d_name, "a") && !strcmp(list[1]->d_name, "b") &&
+             !strcmp(list[2]->d_name, "c");
+
+    for (int i = 0; i < n; ++i)
+        free(list[i]);
+
+    if (n >= 0)
+        free(list);
+
+    return ok;
+}
+
 int main(void)
 {
     struct { char *dev, *opt; } no_args = {0, 0};
@@ -850,9 +884,18 @@ int main(void)
     errno = 0;
     check("kill bad signal -> EINVAL", kill(getpid(), 99) == -1 ? errno : 0, EINVAL);
 
-    /* struct stat layout and times */
+    /* a writable /tmp, for the rest */
     mount("tmpfs", "/tmp", 0, NULL);
 
+    /* scandir() and alphasort() */
+    check("scandir: filtered and sorted", scandir_sorted(), 1);
+    errno = 0;
+    {
+        struct dirent **none;
+        check("scandir of no directory: ENOENT", scandir("/nonexistent", &none, NULL, NULL) == -1 ? errno : 0, ENOENT);
+    }
+
+    /* struct stat layout and times */
     FILE *f = fopen("/tmp/file", "w");
     check("fopen for writing", f != NULL, 1);
     fputs("first line\nsecond line\n", f);
