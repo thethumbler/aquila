@@ -8,6 +8,7 @@ Third-party software that is part of the base system is in
 ```
 make ports                  # build the ports that are out of date
 mk/recipes.sh ports lua     # build some ports, even up to date ones
+ARCH=i386 mk/recipes.sh ports lua   # for i386 (make ports CONFIG=i386-pc for all)
 make initrd                 # the initrd includes the ports once built
 ```
 
@@ -15,8 +16,9 @@ A port is out of date when its recipe or patches, `mk/recipes.sh`, the C
 library or a port it depends on (`DEPENDS`, linked statically) changed
 since it was built.
 
-Ports are installed into `build/ports/root`, which `make initrd` copies
-into the root filesystem after the base system.
+Ports are installed into `build/<arch>/ports/root` (`build/ports/root`
+for i386), which `make initrd` copies into the root filesystem after the
+base system.
 
 ## Recipes
 
@@ -37,13 +39,12 @@ build()
 
 Recipes may call `aquila_config_sub` in `build()` to let an autoconf
 `configure` accept `--host=$TARGET` (`i686-aquila`, `x86_64-aquila` on
-x86-64). A dependency is rebuilt only
-when its recipe or libc changed since it was last built.
+x86-64, `aarch64-aquila`).
 
 `build()` runs in the extracted source directory, after applying any
 `<name>/*.patch` (`patch -p1`), with `CC`, `AR`, `RANLIB` and
-`STRIP` set for the system's toolchain (`$TARGET`, `$ARCH` is `i386`
-or `x86_64`) and `JOBS` for parallel builds. The archive must extract to `<name>-<version>/`, or to the
+`STRIP` set for the system's toolchain (`$TARGET`, `$ARCH` is `i386`,
+`x86_64` or `aarch64`) and `JOBS` for parallel builds. The archive must extract to `<name>-<version>/`, or to the
 directory `ARCHIVE_DIR` names.
 
 A port without a usable release archive comes from git: `GIT` (the

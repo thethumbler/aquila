@@ -9,6 +9,7 @@ tests/run.sh cpu ext2   # run some tests
 tests/run.sh -n         # reuse the kernel image from the last build
 tests/run.sh -v         # print the serial log of failed tests
 tests/run.sh -a i386    # the i386 kernel and system (default: x86_64)
+tests/run.sh -a aarch64 # the aarch64 kernel on QEMU's virt machine: the aarch64 and oom tests
 tests/run.sh -k apic=off    # more for the kernel's command line, every boot
 tests/run.sh -c 4       # QEMU with 4 CPUs, every boot (but the irq and smp tests)
 tests/run.sh -j 4       # 4 tests at once (clock, irq, smp and memory alone, after)
@@ -23,10 +24,13 @@ cross toolchain (`make`, `make CONFIG=i386-pc`) and are skipped without
 it.
 
 Requirements: `gcc`, `ld`, `cpio`, `qemu-system-x86_64` (and
-`qemu-system-i386` for i386), and for the ext2 test `mke2fs`, `e2fsck`,
+`qemu-system-i386` for i386; for aarch64 `clang`, `ld.lld`,
+`llvm-objcopy` and `qemu-system-aarch64`, the tests built with clang),
+and for the ext2 test `mke2fs`, `e2fsck`,
 `debugfs` and `python3`, for the disk test `sfdisk`, `mkfs.fat`, mtools
 and `fakeroot` (skipped if missing). Build output goes to
-`tests/out/x86_64` (`tests/out` for i386).
+`tests/out/x86_64` (`tests/out` for i386, `tests/out/aarch64` for
+aarch64).
 
 ## Tests
 
@@ -37,6 +41,7 @@ and `fakeroot` (skipped if missing). Build output goes to
 | `syscalls` | kernel addresses are rejected (`EFAULT`), and user memory that isn't mapped (the process goes on, a read's bytes stay, a buffer running into it is used up to it), descriptor and signal checks, wait, threads, pipes (and how fast a ping-pong through them goes: no timer tick waited for), unix sockets, bad ELF files, descriptor flags and close-on-exec, open files shared by `dup` and `fork` (offset, status flags) and kept open by a read waiting on one while its descriptor is closed, symlinks, signal masks, process groups, orphans (init's to wait for; a stopped orphaned group gets `SIGHUP` and `SIGCONT`, the terminal's stops and background reads in one don't stop it), copy-on-write after fork, the `*at()` calls, links, rename, permissions and attributes, paths walked vnode by vnode (`..` after a symbolic link, the cwd and an open directory renamed, `..` through mounts, search permission, a removed cwd, trailing slashes), `SIGPIPE`, `nanosleep`, clocks and `times`; `nanosleep`, `poll` and `select` stopped and continued keep their deadline; signals delivered on the way back to user mode: the SSE state kept across a handler, the handler's signal blocked (`SA_NODEFER`), `sa_mask`, `SA_RESETHAND`, nested handlers, `sigsuspend`, a read stopped and continued made again, a forged `sigreturn` frame |
 | `memory`   | with 6 GiB of RAM (2 GiB on i386, which uses 768 MiB), one big mapping (1 GiB, 128 MiB on i386) then 4.5 GiB (512 MiB) of anonymous memory filled, every page with where it is, and read back: memory above 4 GiB, the kernel's small objects (slabs) and its hashmaps for millions of pages |
 | `oom`      | out of memory, with 128 MiB: a process maps 1 GiB and touches it all, or `read()`s `/dev/zero` into it; the page fault that finds no memory kills it (`SIGKILL`), three times each, its memory back each time, and `fork` works after (x86 and aarch64) |
+| `aarch64`  | the generic kernel on aarch64 (`-a aarch64`): user mode and `svc` system calls, the PL011 console, fork and copy on write, exec with arguments, pipes, anonymous memory, page faults (`SIGSEGV`), `EFAULT`, a signal handler and sigreturn, the tick, `uname`'s machine, each thread's FP/SIMD registers, and the e1000 on PCI Express (ECAM) pinging QEMU's gateway |
 | `kvmem`    | the kernel's allocator: its self-test at boot (`kvmem.test`: objects of many sizes on pages of their own, their guard pages unmapped, none overwriting another, freed out of order and the arena merged back as it was); forks, execs and threads leave no object behind; a write past an object's end faults at its guard page (`kvmem.guard`) |
 | `clock`    | the clock from each of its sources, QEMU's options choosing (`clock=` too): the TSC (invariant), the HPET, the PIT's ticks without an HPET; it never goes back, its resolution (finer than a tick but with the PIT), `nanosleep`, and 2 s as the host counts them (`clock/stamp.py` timestamps the serial lines) |
 | `irq`      | interrupts through the APIC and through the 8259 (`apic=off`): `/proc/interrupts` (the controller, the routes), the timer's 500 ticks a second, the NIC's IRQ when a frame comes: the 82540EM's IRQ 11 (level-triggered under the APIC), the 82574L's MSI (its line with the 8259), on QEMU's pc and q35 |
@@ -45,7 +50,7 @@ and `fakeroot` (skipped if missing). Build output goes to
 | `tcp`      | TCP against another one: QEMU's user network has its own (from BSD's), the guest (`tcp/init.c`) and `tcp/host.py` exchange megabytes through it: 2 MiB out, an echo server for 4 MiB and 5 connections at once |
 | `ext2`     | writes through singly, doubly and triply indirect blocks (a sparse file past 64 MiB), appends, directories, renames, links, truncating on an ext2 image, then `e2fsck` and a byte compare on the host; the disk has no partition table, so its first partition isn't there (`ENXIO`) |
 | `minix`    | a minix v1 image (`mkfs.minix -1`): a file through the singly and doubly indirect zones, a sparse one (its holes read zeros), truncating (the zones past the end freed), then `fsck.minix` on the host |
-| `libc`     | errno and signal numbers, stdio, directories, fork/wait, crypt, passwd/shadow and group, truncate, signal masks, the `*at()` calls, `realpath`, `ttyname`, sleeping, `SIGPIPE`, C99 `printf` formats and TCP over loopback (with `stdio` on a socket, `SOCK_NONBLOCK`, `accept4`, `sendmsg`/`recvmsg`), `err(3)`, and `getauxval()`, the resolver (`/etc/hosts`, `/etc/services`, and a DNS server of the test's own on 127.0.0.1: several addresses, a CNAME, the search domain, a truncated answer and TCP, no such name, PTR) through newlib (needs `make toolchain`) |
+| `libc`     | errno and signal numbers, stdio, directories (`scandir`, `alphasort`), fork/wait, crypt, passwd/shadow and group, truncate, signal masks, the `*at()` calls, `realpath`, `ttyname`, sleeping, `SIGPIPE`, C99 `printf` formats and TCP over loopback (with `stdio` on a socket, `SOCK_NONBLOCK`, `accept4`, `sendmsg`/`recvmsg`), `err(3)`, and `getauxval()`, the resolver (`/etc/hosts`, `/etc/services`, and a DNS server of the test's own on 127.0.0.1: several addresses, a CNAME, the search domain, a truncated answer and TCP, no such name, PTR) through newlib (needs `make toolchain`) |
 | `system`   | the initrd built from source (with contrib/, without ports/): logins on the serial console, then dash runs commands, pipelines, `$(...)`, a long line, `^C`, `/dev/tty` and sbase tools, `nc` over loopback, and the `dhcp` service enabled (sdhcp gets the address from QEMU's user network, a ping goes through) (needs `make toolchain` and `make`) |
 | `disk`     | the system installed on a hard disk image (`mk/hdd.sh`): booted from it with Limine twice, a file written on the first boot is read on the second (`mk/hdd-kernel.sh` and `mk/hdd-update.sh` put the kernel and an updated system on it in between), `e2fsck` is clean (needs `make toolchain` and `make`) |
 | `tcc`      | the tcc port (`make ports`) on AquilaOS: compiles and runs programs against the C library and libm (skipped without the port) |
@@ -67,11 +72,15 @@ void aq_main(void)
 {
     aq_begin("example");    /* mounts devfs, opens /dev/ttyS0 */
 
-    check("getpid", SC(S_GETPID, 0, 0, 0) > 0, 1);
+    check("getpid", SC(SYS_getpid, 0, 0, 0) > 0, 1);
 
     aq_end();               /* prints the summary, never returns */
 }
 ```
+
+`aq_argc` and `aq_argv` are the program's arguments, read from its
+initial stack (the System V ABI's: `argc`, `argv`, `envp`, then the
+auxiliary vector); `aq_check_initial_stack()` checks that stack.
 
 Then add a `test_<name>` function and the name to `ALL_TESTS` in
 `run.sh`. The initrd has `/init`, and empty `/dev`, `/mnt` and `/tmp`

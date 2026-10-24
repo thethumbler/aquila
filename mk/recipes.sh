@@ -26,7 +26,7 @@
 #
 # build() runs in the extracted source directory (after applying
 # <tree>/<name>/*.patch) with CC, AR, RANLIB, STRIP set for the system's
-# toolchain ($TARGET: i686-aquila, x86_64-aquila on x86_64, $ARCH), and
+# toolchain ($TARGET: i686-aquila on i386, $ARCH-aquila otherwise), and
 # AQUILA_UAPI pointing at the kernel ABI headers (for host
 # tools that generate target tables). Programs are installed into
 # $DESTDIR (build/<tree>/root), which the initrd includes (make initrd);
@@ -37,7 +37,8 @@
 #   BUILDDIR    output directory (default: <repo>/build/x86_64, <repo>/build
 #               for i386)
 #   TOOLCHAIN   the cross toolchain (default: <repo>/build/toolchain)
-#   ARCH        x86_64 (default) or i386, TARGET its toolchain's prefix
+#   ARCH        x86_64 (default), i386 or aarch64, TARGET its toolchain's
+#               prefix
 #   DOWNLOADS   source archives (default: <repo>/build/downloads)
 #   JOBS        parallel jobs (default: nproc)
 #

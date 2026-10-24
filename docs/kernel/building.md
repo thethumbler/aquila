@@ -79,8 +79,8 @@ AquilaOS is in [`libc/aquila/`](../../libc/aquila/), copied into
 newlib's tree (`newlib/libc/sys/aquila`) when it's built: the start-up
 code (`crt0.c`, `crti.S`, `crtn.S`), the system call wrappers
 (`syscalls.c`, over the traps in `syscall.h`), and what newlib doesn't
-have (`pthread.c`, `dirent.c`, the resolver, `termios.c`, the password
-and group files, ...). Its sources are listed in `Makefile.inc`.
+have (`pthread.c`, `dirent.c`, `auxv.c` for `getauxval()`, the
+resolver, `termios.c`, the password and group files, ...). Its sources are listed in `Makefile.inc`.
 
 ## The kernel
 
@@ -331,13 +331,14 @@ how to write one.
 ### Options
 
 ```
-tests/run.sh [-a arch] [-c cpus] [-k args] [-n] [-v] [test...]
+tests/run.sh [-a arch] [-c cpus] [-j jobs] [-k args] [-n] [-v] [test...]
 ```
 
 | Option | What                                                                         |
 |--------|------------------------------------------------------------------------------|
-| `-a`   | the architecture: `x86_64` (default) or `i386`                                |
+| `-a`   | the architecture: `x86_64` (default), `i386`, or `aarch64` (QEMU's virt machine, built with clang: the `aarch64` and `oom` tests) |
 | `-c`   | the number of CPUs QEMU has, for every boot (but the `irq` and `smp` tests, which choose) |
+| `-j`   | the tests run at once (default 1); those that time things or take much memory (`clock`, `irq`, `smp`, `memory`) run alone, after |
 | `-k`   | more for the kernel's command line, for every boot (e.g. `apic=off`)          |
 | `-n`   | don't build the kernel again, use the last one                                |
 | `-v`   | print the serial log of the tests that failed                                 |
@@ -352,7 +353,10 @@ tests/run.sh -a i386            # i386
 tests/run.sh -k apic=off        # the 8259 and the PIT, one CPU
 tests/run.sh -n -c 4            # four CPUs, every test
 tests/run.sh -n -a i386 -c 4    # the same on i386
+tests/run.sh -a aarch64         # aarch64
 ```
+
+`-j 4` (to any of them) runs 4 tests at once.
 
 ### CI
 
@@ -368,19 +372,20 @@ the documentation as the run's artifacts.
 Almost nothing in the build knows about x86; the architecture comes in
 through the configuration:
 
-| What                  | x86_64                         | i386                          |
-|-----------------------|--------------------------------|-------------------------------|
-| configuration         | `configs/x86_64-pc.mk` (default) | `configs/i386-pc.mk`        |
-| the kernel's sources  | `kernel/arch/x86_64/` (a link to `i386/`) | `kernel/arch/i386/`   |
-| toolchain target      | `x86_64-aquila`                | `i686-aquila`                 |
-| sysroot               | `build/sysroot-x86_64/`        | `build/sysroot/`              |
-| build directory       | `build/x86_64/`                | `build/`                      |
-| QEMU                  | `qemu-system-x86_64`           | `qemu-system-i386`            |
+| What                  | x86_64                         | i386                          | aarch64                       |
+|-----------------------|--------------------------------|-------------------------------|-------------------------------|
+| configuration         | `configs/x86_64-pc.mk` (default) | `configs/i386-pc.mk`        | `configs/aarch64-virt.mk`     |
+| the kernel's sources  | `kernel/arch/x86_64/` (a link to `i386/`) | `kernel/arch/i386/`   | `kernel/arch/aarch64/`        |
+| the kernel's compiler | the toolchain's gcc            | the toolchain's gcc           | clang and ld.lld              |
+| toolchain target      | `x86_64-aquila`                | `i686-aquila`                 | `aarch64-aquila`              |
+| sysroot               | `build/sysroot-x86_64/`        | `build/sysroot/`              | `build/sysroot-aarch64/`      |
+| build directory       | `build/x86_64/`                | `build/`                      | `build/aarch64/`              |
+| QEMU                  | `qemu-system-x86_64`           | `qemu-system-i386`            | `qemu-system-aarch64` (virt)  |
 
-The toolchain script and the recipes take `ARCH=x86_64` or `ARCH=i386`
-(make passes its configuration's); a recipe can say which architectures
-it builds for (`ARCHS`). The live image is i386's only, made for v86,
-which emulates a 32-bit PC.
+The toolchain script and the recipes take `ARCH=x86_64`, `ARCH=i386` or
+`ARCH=aarch64` (make passes its configuration's); a recipe can say which
+architectures it builds for (`ARCHS`, Microwindows' is x86's only).
+The live image is i386's only, made for v86, which emulates a 32-bit PC.
 
 ### x86: compiler flags
 

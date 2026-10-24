@@ -23,11 +23,12 @@
 # bash; aarch64 and oom (-a aarch64)
 # (default: all)
 #
-# Requires gcc with 32-bit support, ld, cpio and qemu-system-i386 (or
-# qemu-system-x86_64). The ext2
-# test also needs e2fsprogs (mke2fs, e2fsck, debugfs) and python3. The libc,
-# system and disk tests need the i686-aquila toolchain (make toolchain) and
-# are skipped without it, the disk test also sfdisk, mkfs.fat, mtools and
+# Requires gcc with 32-bit support, ld, cpio and qemu-system-x86_64 (and
+# qemu-system-i386 for i386; clang, ld.lld, llvm-objcopy and
+# qemu-system-aarch64 for aarch64). The ext2 test also needs e2fsprogs
+# (mke2fs, e2fsck, debugfs) and python3. The libc, system and disk tests
+# need the cross toolchain (make toolchain, x86_64-aquila or i686-aquila)
+# and are skipped without it, the disk test also sfdisk, mkfs.fat, mtools and
 # fakeroot (mk/hdd.sh).
 #
 

@@ -26,8 +26,9 @@ Ctrl-A X quits QEMU. Then:
    rest, each with pointers into the code. [kernel/](kernel/README.md)
    lists what's where.
 2. **Change something.** Add a command to `start/init.c`, or a
-   `printk()` to a system call in `kernel/sys/syscall.c`, and
-   `make run-min` again.
+   `printk()` to a system call (`sys_getpid()` in
+   `kernel/sys/sys_proc.c`, the others in `kernel/sys/sys_*.c` by
+   subject), and `make run-min` again.
 3. **Debug it.** `make debug` boots the same with debugging information
    and QEMU waiting for gdb: `gdb -x mk/gdbinit` and the kernel file it
    names stops in `kmain()`. A panic prints a stack trace;
