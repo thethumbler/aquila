@@ -243,6 +243,8 @@ make docs-serve     # the same, on http://localhost:8000/
 - [X] TinyX   (Xfbdev, X server on the framebuffer, port) with X.Org's
               fixed and cursor fonts, Xlib and the X Toolkit (ports)
 - [X] twm and xterm (ports), `startx`
+- [X] Microwindows (Nano-X, port): windows on the framebuffer, its
+              demos, Nuklear's among them, and nxterm
 - [X] UnixBench (port): `ubench`, its index without Perl
 
 ## License
@@ -265,4 +267,4 @@ binutils and GCC (GPLv3) and newlib (various free licenses); the patched
 tools remain under those licenses. contrib/ and ports/ software is
 fetched from upstream and keeps its own license (dash: BSD, sbase: MIT,
 kilo: BSD 2-Clause, Lua: MIT, ncurses: MIT-style, libtermkey: MIT,
-vis: ISC, UnixBench: GPLv2).
+vis: ISC, UnixBench: GPLv2, Microwindows: MPL 1.1).

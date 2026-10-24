@@ -1,0 +1,119 @@
+diff --git a/src/demos/nanox/Makefile b/src/demos/nanox/Makefile
+index 2c4d62d..1572b19 100644
+--- a/src/demos/nanox/Makefile
++++ b/src/demos/nanox/Makefile
+@@ -107,9 +107,7 @@ TARGETS += $(MW_DIR_BIN)/nxkbd
+ ifneq ($(ARCH),CYGWIN) 
+   ifneq ($(ARCH),RTEMS)
+     ifneq ($(ARCH),ANDROID)
+-      ifneq ($(ARCH),AQUILA)
+-        TARGETS += $(MW_DIR_BIN)/nxterm
+-      endif
++      TARGETS += $(MW_DIR_BIN)/nxterm
+     endif
+   endif
+ endif
+@@ -120,8 +118,9 @@ ifeq ($(HAVE_JPEG_SUPPORT), Y)
+ endif
+ 
+ #
+-# C++ demos
++# C++ demos (AquilaOS has no C++ compiler)
+ #
++ifneq ($(ARCH),AQUILA)
+ 
+ # image conversion demo
+ CANNYOBJS += $(MW_DIR_OBJ)/demos/nanox/demo-convimage.o
+@@ -135,6 +134,8 @@ AGGOBJS += $(MW_DIR_OBJ)/demos/nanox/agglite.o
+ CXXOBJS += $(AGGOBJS)
+ TARGETS += $(MW_DIR_BIN)/demo-agg
+ 
++endif # AQUILA
++
+ endif # COSMO
+ 
+ else # ECOS
+diff --git a/src/demos/nanox/nxroach.c b/src/demos/nanox/nxroach.c
+index 3361c0a..7beeed1 100644
+--- a/src/demos/nanox/nxroach.c
++++ b/src/demos/nanox/nxroach.c
+@@ -96,7 +96,7 @@ main(int ac, char **av)
+ 	}
+     }
+ 
+-    srand((int)time((long *)NULL));
++    srand((int)time(NULL));
+     
+     /*
+        Catch some signals so we can erase any visible roaches.
+diff --git a/src/demos/nanox/nxterm.h b/src/demos/nanox/nxterm.h
+index cf92525..a7aaef2 100644
+--- a/src/demos/nanox/nxterm.h
++++ b/src/demos/nanox/nxterm.h
+@@ -7,7 +7,7 @@
+  *	++eero
+  */
+ 
+-#if LINUX | MACOSX
++#if LINUX | MACOSX | AQUILA
+ static char termtype_string[] = "TERM=ngterm";
+ static char termcap_string[1024] =
+ "TERMCAP=ngterm|nano-X vt52 terminal:\
+diff --git a/src/drivers/scr_fb.c b/src/drivers/scr_fb.c
+index 898120d..9e930b7 100644
+--- a/src/drivers/scr_fb.c
++++ b/src/drivers/scr_fb.c
+@@ -16,6 +16,8 @@
+ #include <linux/fb.h>
+ #include <linux/kd.h>
+ #include <linux/vt.h>
++#elif AQUILA
++#include <sys/fb.h>
+ #endif
+ #include <stdarg.h>
+ #include <stdio.h>
+@@ -44,7 +46,7 @@ static void	set_directcolor_palette(PSD psd);
+ 
+ /* static variables*/
+ static int fb = -1;				/* framebuffer file handle*/
+-#if LINUX
++#if LINUX | AQUILA
+ static short saved_red[16];		/* original hw palette*/
+ static short saved_green[16];
+ static short saved_blue[16];
+@@ -122,7 +124,7 @@ fail:
+ static PSD
+ open_linuxfb(PSD psd)
+ {
+-#if LINUX
++#if LINUX | AQUILA
+ 	int	type, visual;
+ 	int extra = getpagesize() - 1;
+ 	PSUBDRIVER subdriver;
+@@ -269,7 +271,7 @@ open_linuxfb(PSD psd)
+ fail:
+ 	close(fb);
+ 	fb = -1;
+-#endif /* LINUX*/
++#endif /* LINUX | AQUILA*/
+ 	return NULL;
+ }
+ 
+@@ -280,7 +282,7 @@ fb_close(PSD psd)
+ 	/* if not opened, return*/
+ 	if (fb < 0)
+ 		return;
+-#if LINUX
++#if LINUX | AQUILA
+   	/* reset hw palette*/
+ 	ioctl_setpalette(0, 16, saved_red, saved_green, saved_blue);
+   
+@@ -295,7 +297,7 @@ fb_close(PSD psd)
+ 	close(tty);
+ 	}
+ #endif
+-#endif /* LINUX*/
++#endif /* LINUX | AQUILA*/
+ 
+ 	/* close framebuffer*/
+ 	close(fb);

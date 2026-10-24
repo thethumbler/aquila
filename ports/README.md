@@ -95,6 +95,7 @@ host's `/usr/lib`.
 | libxt      | 1.3.1    | library only (the X Toolkit Intrinsics)             |
 | lua        | 5.5.1    | `lua` and `luac` in `/usr/bin`                      |
 | mbedtls    | 3.6.7    | library only (TLS and its cryptography, for curl): the kernel's `/dev/urandom` for entropy; without its own sockets and timers |
+| microwindows | 969eae6 | `microwindows` in `/usr/bin`: Nano-X, a small windowing system on the framebuffer, and its demos (Nuklear among them) in `/usr/lib/microwindows`; `microwindows` opens the demos' launcher, `microwindows nxterm` a terminal. The mouse is `/dev/mouse`, the keyboard the terminal it runs in, in the foreground. x86 only. MPL 1.1 |
 | ncurses    | 6.6      | library only, wide characters, the vt100, ansi, linux, xterm and xterm-256color descriptions built in (no terminfo database) |
 | st         | 0.9.2    | `st` in `/usr/bin`, the terminal of dwm (Xft fonts, TERM=xterm-256color) |
 | tcc        | mob e23dabe | `tcc` (also `cc`) in `/usr/bin`, compiling static programs on AquilaOS; with the C library's headers in `/usr/include` and archives in `/usr/lib`; no `-run` (no `mprotect()`) |
