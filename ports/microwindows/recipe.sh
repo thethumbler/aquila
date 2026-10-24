@@ -22,7 +22,9 @@ build()
 {
     cd src
     cp Configs/config.aquila config
-    make TOOLSPREFIX=$TARGET- -j"$JOBS"
+    # its configuration, not AquilaOS's (make ports CONFIG=... passes that
+    # on in MAKEFLAGS)
+    make CONFIG="$PWD/config" TOOLSPREFIX=$TARGET- -j"$JOBS"
 
     local dir=$DESTDIR/usr/lib/microwindows
 

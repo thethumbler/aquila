@@ -41,8 +41,9 @@
 
 set -euo pipefail
 
-# don't inherit the kernel settings exported by make
-unset CFLAGS CXXFLAGS CPPFLAGS ASFLAGS LDFLAGS LDLIBS LD AS
+# don't inherit the kernel settings exported by make, nor its
+# configuration's name (CONFIG), which some builds (Microwindows) use too
+unset CFLAGS CXXFLAGS CPPFLAGS ASFLAGS LDFLAGS LDLIBS LD AS CONFIG
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
