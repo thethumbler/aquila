@@ -5,6 +5,8 @@
 # /dev/mouse, the keyboard through the terminal). aquila.patch:
 # - reads the framebuffer's mode with Linux's ioctls (<sys/fb.h>), which
 #   upstream now does on Linux only (scr_fb.c);
+# - puts the terminal in front in graphics mode (HAVETEXTMODE, KDSETMODE
+#   on /dev/tty0) so that what's written to it isn't drawn over the windows;
 # - builds the terminal emulator (nxterm, which AquilaOS's ptys can run);
 # - skips the C++ demos (there's no C++ compiler);
 # - calls time() with a time_t pointer in nxroach (i386's is 64 bits).

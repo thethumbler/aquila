@@ -1,3 +1,16 @@
+diff --git a/src/Configs/config.aquila b/src/Configs/config.aquila
+index d76d3dc..de30380 100644
+--- a/src/Configs/config.aquila
++++ b/src/Configs/config.aquila
+@@ -201,7 +201,7 @@ USE_EXPOSURE             = N
+ VTSWITCH                 = N
+ FBREVERSE                = N
+ GRAYPALETTE              = N
+-HAVETEXTMODE             = N
++HAVETEXTMODE             = Y
+ 
+ ####################################################################
+ # Screen pixel format
 diff --git a/src/demos/nanox/Makefile b/src/demos/nanox/Makefile
 index 2c4d62d..1572b19 100644
 --- a/src/demos/nanox/Makefile
@@ -60,19 +73,20 @@ index cf92525..a7aaef2 100644
  static char termcap_string[1024] =
  "TERMCAP=ngterm|nano-X vt52 terminal:\
 diff --git a/src/drivers/scr_fb.c b/src/drivers/scr_fb.c
-index 898120d..9e930b7 100644
+index 898120d..10763ef 100644
 --- a/src/drivers/scr_fb.c
 +++ b/src/drivers/scr_fb.c
-@@ -16,6 +16,8 @@
+@@ -16,6 +16,9 @@
  #include <linux/fb.h>
  #include <linux/kd.h>
  #include <linux/vt.h>
 +#elif AQUILA
 +#include <sys/fb.h>
++#include <sys/kd.h>
  #endif
  #include <stdarg.h>
  #include <stdio.h>
-@@ -44,7 +46,7 @@ static void	set_directcolor_palette(PSD psd);
+@@ -44,7 +47,7 @@ static void	set_directcolor_palette(PSD psd);
  
  /* static variables*/
  static int fb = -1;				/* framebuffer file handle*/
@@ -81,7 +95,7 @@ index 898120d..9e930b7 100644
  static short saved_red[16];		/* original hw palette*/
  static short saved_green[16];
  static short saved_blue[16];
-@@ -122,7 +124,7 @@ fail:
+@@ -122,7 +125,7 @@ fail:
  static PSD
  open_linuxfb(PSD psd)
  {
@@ -90,7 +104,7 @@ index 898120d..9e930b7 100644
  	int	type, visual;
  	int extra = getpagesize() - 1;
  	PSUBDRIVER subdriver;
-@@ -269,7 +271,7 @@ open_linuxfb(PSD psd)
+@@ -269,7 +272,7 @@ open_linuxfb(PSD psd)
  fail:
  	close(fb);
  	fb = -1;
@@ -99,7 +113,7 @@ index 898120d..9e930b7 100644
  	return NULL;
  }
  
-@@ -280,7 +282,7 @@ fb_close(PSD psd)
+@@ -280,7 +283,7 @@ fb_close(PSD psd)
  	/* if not opened, return*/
  	if (fb < 0)
  		return;
@@ -108,7 +122,7 @@ index 898120d..9e930b7 100644
    	/* reset hw palette*/
  	ioctl_setpalette(0, 16, saved_red, saved_green, saved_blue);
    
-@@ -295,7 +297,7 @@ fb_close(PSD psd)
+@@ -295,7 +298,7 @@ fb_close(PSD psd)
  	close(tty);
  	}
  #endif
