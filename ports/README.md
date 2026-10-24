@@ -6,10 +6,14 @@ Third-party software that is part of the base system is in
 [mk/recipes.sh](../mk/recipes.sh).
 
 ```
-make ports                  # build every port
-mk/recipes.sh ports lua     # build some ports
+make ports                  # build the ports that are out of date
+mk/recipes.sh ports lua     # build some ports, even up to date ones
 make initrd                 # the initrd includes the ports once built
 ```
+
+A port is out of date when its recipe or patches, `mk/recipes.sh`, the C
+library or a port it depends on (`DEPENDS`, linked statically) changed
+since it was built.
 
 Ports are installed into `build/ports/root`, which `make initrd` copies
 into the root filesystem after the base system.

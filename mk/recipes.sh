@@ -2,7 +2,10 @@
 #
 # Build third-party software for AquilaOS from upstream sources.
 #
-# usage: mk/recipes.sh contrib|ports [name...]   (default: all of the tree)
+# usage: mk/recipes.sh contrib|ports [name...]
+#
+# The recipes named are built; without names, those of the tree that are
+# out of date (see build_port()).
 #
 # contrib/ is the third-party part of the base system (make), ports/ is
 # optional software (make ports). Both use recipes: <tree>/<name>/recipe.sh
@@ -120,8 +123,10 @@ recipe_tree()
     done
 }
 
-# build_port <name> [dep]: a dependency (dep set) that was built since its
-# recipe and libc last changed is not built again
+# build_port <name> [force]: built unless it's up to date: built (its
+# stamp) since its recipe or patches, this script, libc and the recipes it
+# depends on last changed (it links them statically); force (a recipe
+# named on the command line) builds it anyway
 build_port()
 {
     local tree
@@ -138,12 +143,6 @@ build_port()
 
     local stamp=$BUILDDIR/$tree/$1.built
 
-    if [ -n "${2:-}" ] && [ -f "$stamp" ] &&
-       [ -z "$(find "$ROOT/$tree/$1" "$LIBC" -newer "$stamp" 2>/dev/null)" ]; then
-        built[$1]=1
-        return
-    fi
-
     # not for this architecture
     local archs
     archs=$(ARCHS=; source "$recipe"; echo "$ARCHS")
@@ -155,10 +154,21 @@ build_port()
     fi
 
     # dependencies first
-    local dep
+    local dep deps=()
     for dep in $(DEPENDS=; source "$recipe"; echo "$DEPENDS"); do
-        build_port "$dep" dep
+        build_port "$dep"
+        deps+=("$BUILDDIR/$(recipe_tree "$dep")/$dep.built")
     done
+
+    if [ -z "${2:-}" ] && [ -f "$stamp" ] &&
+       [ -z "$(find "$ROOT/$tree/$1" "$0" "$LIBC" "${deps[@]}" -newer "$stamp" 2>/dev/null)" ]; then
+        echo "==> $1 is up to date"
+        built[$1]=1
+        return
+    fi
+
+    # a build that fails isn't up to date
+    rm -f "$stamp"
 
     (
         # optional settings start unset
@@ -228,6 +238,13 @@ build_port()
     built[$1]=1
 }
 
-for port in ${*:-$(cd "$ROOT/$TREE" && ls -d */ | tr -d /)}; do
-    build_port "$port"
-done
+# the recipes named are built, the others when they're out of date
+if [ $# -gt 0 ]; then
+    for port in "$@"; do
+        build_port "$port" force
+    done
+else
+    for port in $(cd "$ROOT/$TREE" && ls -d */ | tr -d /); do
+        build_port "$port"
+    done
+fi

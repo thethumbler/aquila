@@ -187,7 +187,9 @@ architectures it builds for, and a `build()` function; patches next to it
 are applied first. [`mk/recipes.sh`](../../mk/recipes.sh) downloads,
 checks, unpacks and builds it, with the cross compiler, and installs the
 programs into `build/<arch>/<tree>/root/` and the libraries other recipes
-need into `build/<arch>/staging/`. `mk/recipes.sh ports lua` builds one.
+need into `build/<arch>/staging/`. `make ports` builds those out of date
+(their recipe, the C library or a dependency changed since),
+`mk/recipes.sh ports lua` builds one anyway.
 
 ## The root filesystem and the images
 
