@@ -1,0 +1,70 @@
+name: docs
+
+# The kernel's documents and code reference (make docs), published on
+# GitHub Pages from main. The repository's Pages source must be "GitHub
+# Actions" (Settings, Pages).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - kernel/**
+      - include/**
+      - Makefile
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# one publish at a time; a newer push doesn't cancel one under way
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # the release the docs build without a warning with (Ubuntu 24.04's
+      # is 1.9.8)
+      - name: Install Doxygen
+        run: |
+          v=1.18.0
+          curl -sSfL -o doxygen.tar.gz \
+            "https://github.com/doxygen/doxygen/releases/download/Release_${v//./_}/doxygen-$v.linux.bin.tar.gz"
+          echo "14fa81bdc34171edb5f1f02b1d60e74802f0439b77fa44e592565d517d72df90  doxygen.tar.gz" |
+            sha256sum -c -
+          tar xzf doxygen.tar.gz
+          echo "$PWD/doxygen-$v/bin" >> "$GITHUB_PATH"
+
+      # warnings don't stop the publish (the build workflow fails on them),
+      # they're shown on the run
+      - name: Build
+        run: |
+          make docs
+          sed 's/^/::warning::/' build/docs/kernel/warnings.log
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/docs/kernel/api
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
