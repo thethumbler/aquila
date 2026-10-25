@@ -9,13 +9,15 @@
  *
  * Each channel transfers through a buffer of its own, which is physically
  * contiguous and doesn't cross a 64 KiB boundary, as the controller
- * requires. One physical region descriptor (PRD) describes it.
+ * requires: a 64 KiB block of the buddy allocator, aligned to its size.
+ * One physical region descriptor (PRD) describes it.
  */
 
 #include <core/system.h>
 #include <core/string.h>
 #include <cpu/io.h>
 #include <mm/mm.h>
+#include <mm/buddy.h>
 #include <sys/sched.h>
 #include <aquila/errno.h>
 
@@ -45,10 +47,11 @@ struct prd {
 
 #define PRD_EOT         0x8000
 
-/* each channel's descriptor and buffer, in the kernel image, so that their
- * physical address is LMA() */
+/* each channel's descriptor, in the kernel image (its physical address is
+ * LMA()), and its buffer, from the buddy allocator (dma_init()) */
 static struct prd prdt[2] __aligned(16);
-static char dma_buf[2][DMA_BUF_SIZE] __aligned(DMA_BUF_SIZE);
+static paddr_t dma_buf_paddr[2];
+static char *dma_buf[2];
 
 /** Returns which channel a drive is on: 0 (primary) or 1 (secondary). */
 static int channel_index(struct ata_drive *drive)
@@ -95,7 +98,7 @@ static int dma_transfer(struct ata_drive *drive, uint64_t lba, size_t count, int
     struct ata_channel *ch = drive->channel;
     int c = channel_index(drive);
 
-    prdt[c].addr  = (uint32_t) (uintptr_t) LMA(&dma_buf[c][0]);
+    prdt[c].addr  = (uint32_t) dma_buf_paddr[c];
     prdt[c].size  = (count * 512) & 0xFFFF;
     prdt[c].flags = PRD_EOT;
 
@@ -190,12 +193,28 @@ static ssize_t dma_write(struct ata_drive *drive, uint64_t lba, size_t count, vo
  * can do it.
  *
  * @param drive  the drive
- * @return 0 if the drive uses DMA now, or `-ENODEV` if it can't
+ * @return 0 if the drive uses DMA now, `-ENODEV` if it can't, or `-ENOMEM`
+ *         if there is no memory for its channel's buffer
  */
 int dma_init(struct ata_drive *drive)
 {
     if (!drive->channel->bm.addr || !(drive->capabilities & ATA_CAP_DMA))
         return -ENODEV;
+
+    /* the channel's buffer, once for its two drives: a block of the buddy
+     * allocator is aligned to its size, so it crosses no 64 KiB boundary,
+     * and below 16 MiB its address fits the descriptor's 32 bits */
+    int c = channel_index(drive);
+
+    if (!dma_buf[c]) {
+        paddr_t paddr = buddy_alloc(BUDDY_ZONE_DMA, DMA_BUF_SIZE);
+
+        if (paddr == (paddr_t) -1)
+            return -ENOMEM;
+
+        dma_buf_paddr[c] = paddr;
+        dma_buf[c] = PHYS2VIRT(paddr);
+    }
 
     drive->read  = dma_read;
     drive->write = dma_write;

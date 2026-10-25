@@ -54,6 +54,13 @@ SECTIONS {
 
     kernel_end = . - _VMA;
 
+    /* The boot loader loads the file from kernel_start to kernel_load_end
+     * as one piece, so the sections must follow each other in the file as
+     * in memory. A section aligned to more than a page would make ld align
+     * its segment's place in the file too, and move it. */
+    ASSERT(ALIGNOF(.data) <= 0x1000 && ALIGNOF(.bss) <= 0x1000,
+           "a section aligned to more than a page: the kernel can't be loaded")
+
     /* debugging information (DEBUG=1, make debug): in the file for gdb,
      * not loaded; after kernel_end, which their address 0 would move */
     .debug_aranges     0 : { *(.debug_aranges) }

@@ -304,7 +304,9 @@ drives: `hda`, `hdb` on the first channel, `hdc`, `hdd` on the second
   ([`dma.c`](../../kernel/dev/ata/dma.c)), when the controller has it
   (BAR 4), lets the controller move a whole command's data itself,
   through a 64 KiB buffer described by a *physical region descriptor*,
-  and the request sleeps until the drive's interrupt. DMA is used when
+  and the request sleeps until the drive's interrupt. Each channel's
+  buffer is a block of the buddy allocator, below 16 MiB: aligned to its
+  size, it crosses no 64 KiB boundary, as the controller requires. DMA is used when
   available; `ata.nodma` on the command line keeps to PIO. Under a
   hypervisor PIO is especially slow: every port access exits to it.
 
