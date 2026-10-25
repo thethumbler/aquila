@@ -13,8 +13,8 @@ Most of that is design and the same on any machine: which pages are
 free, what a process's memory is made of, when a page is copied. The
 page tables' format and how the MMU reports a fault are the
 architecture's. This document describes the kernel's side first, then
-how x86 does its part (see [The kernel and the machine](architecture.md)
-for the split).
+how x86 and aarch64 do their part (see
+[The kernel and the machine](architecture.md) for the split).
 
 ## The kernel's side
 
@@ -52,12 +52,14 @@ big blocks stay together. AquilaOS only ever asks it for single pages
 Shortcuts:
 
 - RAM is in two *zones*, below 16 MiB (`BUDDY_ZONE_DMA`, for old ISA
-  devices that can't reach higher) and above (`BUDDY_ZONE_NORMAL`). All
-  allocations come from the second: the first 16 MiB are never handed
-  out.
+  devices that can't reach higher) and above (`BUDDY_ZONE_NORMAL`). Pages
+  come from the second, and from the first only once the second has none
+  left (`mm_page_alloc()`).
 - What isn't free at boot (the kernel, the modules, reserved ranges) is
-  marked used in whole 4 MiB blocks, and the end of RAM is rounded down
-  to 4 MiB. A few MiB are lost this way.
+  marked used in whole 4 MiB blocks; the first allocation gives back the
+  pages of those blocks that no reserved range covers
+  (`buddy_reserved_done()`). The end of RAM is rounded down to 4 MiB:
+  what's past it is lost.
 - There is no reclaiming: pages aren't swapped out, cached file pages
   aren't dropped.
 
@@ -174,7 +176,8 @@ copy, see [Interrupts](interrupts.md)), then tries, in order:
 
 1. **A page is there, but read-only** (`pf_present()`): if the page is
    this process's alone, it was made read-only by `fork()`; it's made
-   writable again.
+   writable again, or, if it's marked to be copied before it's written
+   (`VM_COPY`), it's copied first.
 2. **The region's private pages** (`pf_anon()`): if it has one for this
    offset, a read maps it read-only, a write maps it writable if this
    region is its only user, or copies it first (*copy on write*).
@@ -225,9 +228,10 @@ the start at each fault: fine for the few regions a program has here.
 
 ### The kernel's address space
 
-The kernel has an address space too, `kvm_space`, whose page tables are
-in the upper part of every process's, so the kernel's addresses work
-whichever process runs. It holds:
+The kernel has an address space too, `kvm_space`, whose mappings are in
+the upper half of every process's address space, so the kernel's
+addresses work whichever process runs (x86 shares the tables in every
+process's, aarch64 has one table of its own for that half). It holds:
 
 - the **direct map**: all of RAM, at `PHYS2VIRT(paddr)`. The kernel
   reaches any physical page there (page tables, a page being copied, a
@@ -237,7 +241,8 @@ whichever process runs. It holds:
 - the windows for what isn't RAM: a device's registers
   (`arch_mmio_map()`, uncached), ACPI's tables, the framebuffer.
 
-The architecture decides where each one is (`kernel/arch/i386/include/mm/mm.h`).
+The architecture decides where each one is (`kernel/arch/i386/include/mm/mm.h`,
+`kernel/arch/aarch64/include/mm/mm.h`).
 
 ### The page table interface
 
@@ -333,26 +338,56 @@ Shortcuts: AquilaOS doesn't use the no-execute bit, so on x86 a readable
 page is also executable (`VM_UX` isn't enforced); the device windows are
 handed out and never given back.
 
+## aarch64: page tables
+
+aarch64's tables ([`mm/pmap.c`](../../kernel/arch/aarch64/mm/pmap.c)) have
+4 levels of 512 entries, with 4 KiB pages and 48-bit addresses, as on
+x86_64. The address space has two halves, each with its own top table:
+user space is `TTBR0_EL1`'s, one table for each pmap, and the kernel's
+half is `TTBR1_EL1`'s, one table for all, set at boot and never switched.
+The kernel's mappings are then the same in every address space without
+copying entries, and `pmap_switch()` only loads `TTBR0_EL1`, flushing the
+TLB (there are no ASIDs).
+
+The layout (`ARCH_*` in `kernel/arch/aarch64/include/mm/mm.h`):
+
+| From                    | Size     | What                                          |
+|-------------------------|----------|-----------------------------------------------|
+| `0x0000000000000000`    | 128 TiB  | user space, the stack below `0x0000800000000000` |
+| `0xFFFF000000000000`    | all RAM  | the direct map, with 1 GiB blocks, the kernel in it |
+| `0xFFFF800000000000`    | 1 GiB    | kvmem                                         |
+| `0xFFFF900000000000`    | 16 GiB   | slabs                                         |
+| `0xFFFFA00000000000`    | 64 GiB   | devices' registers, and memory past the direct map |
+
+A fault is an *abort*: `abort()` in [`cpu/trap.c`](../../kernel/arch/aarch64/cpu/trap.c)
+takes the address from `FAR_EL1` and the kind of access from `ESR_EL1`
+(an instruction abort, a write, a permission fault for a page that is
+there) into `PF_*` flags. Unlike x86, aarch64 enforces `VM_UX`: a page
+without it has `UXN` set.
+
 ## Where it is
 
-| File                                     | Layer  | What                                         |
-|------------------------------------------|--------|----------------------------------------------|
-| `kernel/mm/mm.c`                         | kernel | `pages[]`, boot memory, `mm_setup()`         |
-| `kernel/mm/buddy.c`                      | kernel | the buddy allocator                          |
-| `kernel/mm/kvmem.c`                      | kernel | `kmalloc()`, `kfree()`, big objects, guard pages |
-| `kernel/mm/slab.c`                       | kernel | small objects                                |
-| `kernel/mm/vmem.c`                       | kernel | the vmem range allocator                     |
-| `kernel/mm/vm_space.c`, `vm_entry.c`, `vmm.c` | kernel | address spaces and regions, `fork`      |
-| `kernel/mm/vm_anon.c`                    | kernel | private pages                                |
-| `kernel/mm/vm_object.c`, `kernel/fs/vm_object.c` | kernel | a file's pages                       |
-| `kernel/mm/fault.c`                      | kernel | `mm_page_fault()`                            |
-| `kernel/sys/binfmt/`                     | kernel | the regions of a new program                 |
-| `kernel/sys/sys_proc.c`                  | kernel | `sbrk()`, `mmap()`, `munmap()`               |
-| `kernel/include/mm/`                     | kernel | the structures, and the `pmap` interface     |
-| `kernel/arch/i386/include/mm/mm.h`       | x86    | the address space layouts                    |
-| `kernel/arch/i386/mm/i386.c`             | x86    | 32-bit paging                                |
-| `kernel/arch/i386/mm/x86_64.c`           | x86    | 4-level paging                               |
-| `kernel/arch/i386/mm/mm.c`               | x86    | `arch_mm_setup()`                            |
+| File                                             | Layer   | What                                         |
+|--------------------------------------------------|---------|----------------------------------------------|
+| `kernel/mm/mm.c`                                 | kernel  | `pages[]`, boot memory, `mm_setup()`         |
+| `kernel/mm/buddy.c`                              | kernel  | the buddy allocator                          |
+| `kernel/mm/kvmem.c`                              | kernel  | `kmalloc()`, `kfree()`, big objects, guard pages |
+| `kernel/mm/slab.c`                               | kernel  | small objects                                |
+| `kernel/mm/vmem.c`                               | kernel  | the vmem range allocator                     |
+| `kernel/mm/vm_space.c`, `vm_entry.c`, `vmm.c`    | kernel  | address spaces and regions, `fork`           |
+| `kernel/mm/vm_anon.c`                            | kernel  | private pages                                |
+| `kernel/mm/vm_object.c`, `kernel/fs/vm_object.c` | kernel  | a file's pages                               |
+| `kernel/mm/fault.c`                              | kernel  | `mm_page_fault()`                            |
+| `kernel/sys/binfmt/`                             | kernel  | the regions of a new program                 |
+| `kernel/sys/sys_proc.c`                          | kernel  | `sbrk()`, `mmap()`, `munmap()`               |
+| `kernel/include/mm/`                             | kernel  | the structures, and the `pmap` interface     |
+| `kernel/arch/i386/include/mm/mm.h`               | x86     | the address space layouts                    |
+| `kernel/arch/i386/mm/i386.c`                     | x86     | 32-bit paging                                |
+| `kernel/arch/i386/mm/x86_64.c`                   | x86     | 4-level paging                               |
+| `kernel/arch/i386/mm/mm.c`                       | x86     | `arch_mm_setup()`                            |
+| `kernel/arch/aarch64/include/mm/mm.h`            | aarch64 | the address space layout                     |
+| `kernel/arch/aarch64/mm/pmap.c`                  | aarch64 | 4-level paging, `arch_mm_setup()`            |
+| `kernel/arch/aarch64/cpu/trap.c`                 | aarch64 | page faults (aborts)                         |
 
 ## References
 
@@ -370,6 +405,9 @@ handed out and never given back.
 - Intel® 64 and IA-32 Architectures Software Developer's Manual, Volume 3,
   chapter 4: *Paging* (32-bit paging, 4-level paging, page fault error
   codes).
+- Arm Architecture Reference Manual for A-profile, D8: *The AArch64
+  Virtual Memory System Architecture* (translation tables, `TTBR0_EL1`
+  and `TTBR1_EL1`, aborts).
 - The OSDev wiki's pages on [Paging](https://wiki.osdev.org/Paging),
   [Page Frame Allocation](https://wiki.osdev.org/Page_Frame_Allocation)
   and [Copy On Write](https://wiki.osdev.org/Copy_On_Write).

@@ -18,7 +18,7 @@ How the trap is made, and where the number and the arguments are, is the
 architecture's business. What happens next is not: finding the handler,
 reading user memory safely, returning errors, sleeping. This document
 starts with the kernel's side, the same on every machine, then describes
-x86's (see [The kernel and the machine](architecture.md) for the split).
+x86's and aarch64's (see [The kernel and the machine](architecture.md) for the split).
 
 ## The kernel's side
 
@@ -95,7 +95,10 @@ The handler returns the result, one word. By the kernel's convention
 (see the [README](README.md)) an error is a negative `errno`: `-EBADF`,
 `-EFAULT`. The C library turns that into the C convention, `-1` and
 `errno` set (`__syscall_ret()`, in
-[`libc/aquila/syscall.h`](../../libc/aquila/syscall.h)).
+[`libc/aquila/syscall.h`](../../libc/aquila/syscall.h)). One call is the
+exception: `sbrk` returns the old end of the heap, an address, and fails
+with `(uintptr_t) -1` rather than `-ENOMEM`, which the C library passes
+through as `(void *) -1`.
 
 ```c
 long sys_read(int fildes, void *buf, size_t nbytes)
@@ -121,8 +124,9 @@ architecture returns it to user mode. A few calls don't return to their
 caller the usual way:
 
 - `fork` returns to two threads: the parent gets the child's pid,
-  `sys_fork()`'s result, and the child, a thread that hasn't run yet,
-  gets 0, set in it with `arch_syscall_return()` by `proc_fork()`
+  `sys_fork()`'s result, and the child gets 0, set with
+  `arch_syscall_return()` by `proc_fork()` in its copy of the call's
+  saved registers, from which it returns to user mode
   ([Processes and threads](processes.md));
 - `execve` doesn't return when it works: the new program starts;
 - `exit` never returns;
@@ -171,9 +175,11 @@ User memory is mapped in the kernel's address space while a process
 runs (it's the same page tables), so a copy is a plain memory copy. A
 fault during one goes to the page fault handler first, which maps the
 page if it's part of the process's memory, not yet there (a page of the
-heap never touched, a page of a file): the copy carries on. Only when the
-address isn't the process's at all does the copy stop and return
-`-EFAULT` (see [Interrupts](interrupts.md)). Anywhere else, a
+heap never touched, a page of a file): the copy carries on. When the
+address isn't the process's at all, or the page can't be had (no memory
+for it, which also kills the process, or a file's page that can't be
+read), the copy stops and returns `-EFAULT` (see [Interrupts](interrupts.md)
+and [Memory](memory.md)). Anywhere else, a
 kernel fault at a user address is a bug, and the kernel panics: it
 touched user memory without the copy functions.
 
@@ -253,7 +259,8 @@ On the C library's side, in `libc/aquila/` (newlib's port, see
 2. its declaration, if newlib's headers don't have it (`libc/aquila/include/`,
    `libc/aquila/sys/`); a new source file goes in `Makefile.inc`;
 3. the headers and libc built again: `toolchain/build.sh headers libc`
-   (`ARCH=i386` for i386), then the programs that use it.
+   (`ARCH=i386` or `ARCH=aarch64` for those, x86_64 by default), then
+   the programs that use it.
 
 And a check of it in `tests/syscalls/init.c`, which calls the kernel
 directly, without the C library.
@@ -298,8 +305,9 @@ which:
    (`x86_return_to_user()`, [`sys/signal.c`](../../kernel/arch/i386/sys/signal.c)).
 
 `arch_syscall_return()` writes the result into the saved `eax` (`rax`),
-which the return from the interrupt loads. A thread that hasn't run yet,
-a child of `fork`, has no saved registers on its stack: its result goes in
+which the return from the interrupt loads. A child of `fork` has a copy
+of its parent's saved registers on its own kernel stack, and its 0 goes
+there too. A thread that has never run has none: its result would go in
 the thread's structure (`arch->eax`), from where it starts.
 
 A call to restart is restarted by moving the saved instruction pointer
@@ -330,6 +338,26 @@ them, the fault "returns" to its fixup, which returns what wasn't copied
   on the rule instead: a kernel fault at a user address outside the
   copies panics, but a read that happens to succeed goes unnoticed.
 
+## aarch64: svc #0
+
+On aarch64, a program makes a system call with `svc #0`, as on Linux:
+the number in `x8`, the arguments in `x0` to `x4`, and the result back
+in `x0`. The exception entry ([`cpu/vectors.S`](../../kernel/arch/aarch64/cpu/vectors.S))
+saves the registers in a `struct aarch64_regs` on the kernel stack, and
+`aarch64_sync()` ([`cpu/trap.c`](../../kernel/arch/aarch64/cpu/trap.c))
+hands an `svc` to `arch_syscall()` ([`sys/syscall.c`](../../kernel/arch/aarch64/sys/syscall.c)),
+which works as x86's: `syscall_dispatch()`, an urgent thread
+(`aarch64_preempt()`), then the signals (`aarch64_return_to_user()`).
+
+The result takes the first argument's place in `x0`, so the entry also
+keeps that argument in `orig_x0`. A call to restart is restarted by
+moving the saved `pc` back by four bytes, the length of `svc`, and
+putting `orig_x0` back in `x0`; the number is still in `x8`.
+
+`arch_copy_user()` and `arch_copy_user_str()`
+([`cpu/uaccess.S`](../../kernel/arch/aarch64/cpu/uaccess.S)) are byte
+loops, with their fixup table, `aarch64_uaccess_fixups`, as on x86.
+
 ## Where it is
 
 | File                                         | Layer    | What                                    |
@@ -347,6 +375,10 @@ them, the fault "returns" to its fixup, which returns what wasn't copied
 | `kernel/arch/i386/sys/syscall.c`             | x86      | `arch_syscall()`, `arch_syscall_return()` |
 | `kernel/arch/i386/sys/signal.c`              | x86      | the way back to user mode, restarts     |
 | `kernel/arch/i386/cpu/uaccess.S`             | x86      | `arch_copy_user()`, the fixup table     |
+| `kernel/arch/aarch64/cpu/trap.c`             | aarch64  | the trap, `uaccess_fixup()`             |
+| `kernel/arch/aarch64/sys/syscall.c`          | aarch64  | `arch_syscall()`, `arch_syscall_return()` |
+| `kernel/arch/aarch64/sys/signal.c`           | aarch64  | the way back to user mode, restarts     |
+| `kernel/arch/aarch64/cpu/uaccess.S`          | aarch64  | `arch_copy_user()`, the fixup table     |
 | `libc/aquila/syscall.h`, `syscalls.c`        | libc     | the traps and the C functions           |
 | `tests/syscalls/init.c`                      | test     | the calls, without libc                 |
 
@@ -361,4 +393,6 @@ them, the fault "returns" to its fixup, which returns what wasn't copied
 - Intel® 64 and IA-32 Architectures Software Developer's Manual, Volume
   3: *Interrupt and Exception Handling*, and the `SYSCALL`, `SYSENTER`
   and `INT n` instructions (Volume 2); SMAP in *Paging* (Access Rights).
+- Arm Architecture Reference Manual for A-profile: the `SVC`
+  instruction, and exception entry (`ESR_EL1`, `ELR_EL1`).
 - FreeBSD's `copyin(9)` manual page: the same functions, the same names.

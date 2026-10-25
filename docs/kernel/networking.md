@@ -10,8 +10,8 @@ rest up, or puts its header on and hands the packet down.
 
 All of this is the kernel's own: no part of the stack depends on the
 CPU or the machine. Only the network card's driver is a driver, and
-like other drivers it still installs its interrupt handler through x86's
-interface (see "Where the line is blurred" in
+like other drivers it is told its interrupt by its bus and installs its
+handler with `irq_install()` (see "Devices: drivers and the platform" in
 [The kernel and the machine](architecture.md)).
 
 This document goes from the top down: sockets, as programs see them,
@@ -35,10 +35,10 @@ and used through a file descriptor, so `read()`, `write()`, `poll()` and
 The socket layer ([`net/socket.c`](../../kernel/net/socket.c),
 [`include/net/socket.h`](../../kernel/include/net/socket.h)) is a table
 of functions: a socket has a `struct sock_ops` (`bind`, `connect`,
-`listen`, `accept`, `send`, `recv`, `getname`, `getsockopt`, `ioctl`,
-`can_read`, `can_write`, `wait_queue`, `shut`, `shutdown`), and the
-system calls call the socket's. `socket_create()` picks the table by
-domain and type. A file that is a socket has `FILE_SOCKET` in its flags;
+`listen`, `accept`, `send`, `recv`, `getname`, `getsockopt`,
+`setsockopt`, `ioctl`, `can_read`, `can_write`, `wait_queue`, `shut`,
+`shutdown`), and the system calls call the socket's. `socket_create()`
+picks the table by domain and type. A file that is a socket has `FILE_SOCKET` in its flags;
 `read()` on it is `recv()`, `write()` is `send()`
 ([`fs/fops.c`](../../kernel/fs/fops.c)).
 
@@ -102,9 +102,9 @@ Interfaces are configured from user space with `ioctl()`s on any
 `AF_INET` socket ([`net/inet/ifioctl.c`](../../kernel/net/inet/ifioctl.c)):
 `SIOCGIFCONF` lists them, `SIOCGIFFLAGS`/`SIOCSIFFLAGS`,
 `SIOCGIFADDR`/`SIOCSIFADDR`, `SIOCGIFNETMASK`/`SIOCSIFNETMASK`,
-`SIOCGIFHWADDR`, `SIOCGIFMTU` and `SIOCGIFINDEX` read and set them, and
-`SIOCADDRT`/`SIOCDELRT` the default route. Setting is root's. `aqbox`'s
-`ifconfig` and `route` use them (`userland/aqbox/net/`).
+`SIOCGIFBRDADDR`, `SIOCGIFHWADDR`, `SIOCGIFMTU` and `SIOCGIFINDEX` read
+and set them, and `SIOCADDRT`/`SIOCDELRT` the default route. Setting is
+root's. `aqbox`'s `ifconfig` and `route` use them (`userland/aqbox/net/`).
 Or, for the tests and for booting without a configuration step, the
 command line: `ip=10.0.2.15/24:10.0.2.2` configures the first Ethernet
 interface at boot (`netif_config()`). DHCP is a program, `sdhcp`, run as
@@ -148,10 +148,12 @@ finds the MAC address of an IPv4 address on the link. It:
   and from the IPv4 packets we receive; when it's full, the entry
   updated longest ago is replaced;
 - asks for an address a packet is sent to (a broadcast "who has"), and
-  holds up to 3 packets for it until the answer comes; the question is
-  asked 3 times, a second apart, then the packets are dropped.
+  holds up to 3 packets for it until the answer comes, for up to 8
+  addresses at a time; the question is asked 3 times, a second apart,
+  then the packets are dropped.
 
-Entries never expire; one that went stale is only replaced.
+An entry that hasn't been heard from for 20 minutes is asked for again:
+the machine may have gone, or another may have taken its address.
 
 ### IPv4
 
@@ -187,8 +189,9 @@ datagram we sent, the sending socket's next call fails with
 **UDP** ([`net/inet/udp.c`](../../kernel/net/inet/udp.c), RFC 768) adds
 ports and a checksum to IPv4. A datagram goes to the socket bound to its
 destination port (and, if it's connected, from the source it's connected
-to; `inet_sock_find()`), and waits in the socket's queue, up to 64 KiB
-of them, with its source address for `recvfrom()`
+to; `inet_sock_find()`), and waits in the socket's queue, up to 128 of
+them (each counted as a whole 2 KiB netbuf, whatever its size), with its
+source address for `recvfrom()`
 ([`net/inet/socket.c`](../../kernel/net/inet/socket.c)). A socket that
 sends without binding first gets an *ephemeral* port, the next free one
 from 49152 to 65535.
@@ -271,10 +274,10 @@ acknowledgments (SACK).
 
 The **e1000** driver ([`dev/net/e1000.c`](../../kernel/dev/net/e1000.c))
 drives Intel's 8254x Ethernet controllers, QEMU's default network card
-on the PC, and the 82574L (QEMU's `e1000e`). It's a PCI device, found
-by its IDs, its registers memory-mapped through BAR 0
-(`arch_mmio_map()`), so nothing in it is PC-specific but its interrupt
-handler's registration.
+on the PC (and `-device e1000` on the virt machine), and the 82574L
+(QEMU's `e1000e`). It's a PCI device, found by its IDs, its registers
+memory-mapped through BAR 0 (`arch_mmio_map()`), its interrupt
+installed with `irq_install()`, so nothing in it is PC-specific.
 
 The card moves frames to and from memory itself (DMA), through two
 **rings of descriptors**, 32 each: a descriptor is the physical address
@@ -290,8 +293,8 @@ of a 2 KiB buffer, a length, and a status.
   full ring (the next descriptor not done) drops the frame (`ENOBUFS`),
   and TCP sends it again later.
 - **Interrupts**: one per batch of received frames, or a change in the
-  link. With an APIC, the 82574L interrupts with MSI; otherwise the PCI
-  line.
+  link. On x86 with an APIC, the 82574L interrupts with MSI; otherwise
+  (and on aarch64's virt machine, through the GIC) the PCI line.
 
 Frames are copied once each way, between the card's buffers and
 netbufs, which is simpler than giving netbufs to the card.
@@ -303,8 +306,8 @@ netbufs, which is simpler than giving netbufs to the card.
   link and a default route.
 - Fragmentation and reassembly.
 - Raw sockets (ping has its own socket type).
-- `socketpair()`, and `AF_UNIX` datagram sockets: an `AF_UNIX`
-  `SOCK_DGRAM` socket is made, but behaves as a stream.
+- `socketpair()`, and `AF_UNIX` datagram sockets: `socket(AF_UNIX,
+  SOCK_DGRAM, 0)` fails with `EPROTONOSUPPORT`.
 - TCP window scaling, timestamps and SACK.
 - DHCP and DNS in the kernel: they are user space's (`sdhcp`, the C
   library's resolver with `/etc/resolv.conf`).
@@ -328,7 +331,7 @@ netbufs, which is simpler than giving netbufs to the card.
 | `kernel/net/inet/tcp_socket.c`     | kernel | TCP: connections, sockets, timers             |
 | `kernel/net/inet/tcp_input.c`      | kernel | TCP: segments in                              |
 | `kernel/net/inet/tcp_output.c`     | kernel | TCP: segments out, retransmission             |
-| `kernel/dev/net/e1000.c`           | kernel | the e1000 card (its IRQ through x86's interface) |
+| `kernel/dev/net/e1000.c`           | kernel | the e1000 card                                |
 | `userland/aqbox/net/`              | —      | `ifconfig`, `route`, `ping`                   |
 
 ## References

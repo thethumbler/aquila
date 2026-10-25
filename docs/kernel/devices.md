@@ -85,8 +85,9 @@ struct dev {
 When the VFS opens or reads a device node, it calls `kdev_file_open()`,
 `kdev_read()` and so on with the node's `struct devid` (type, major,
 minor); `kdev` finds the driver and calls its function. A missing
-function is `ENXIO`, except `lseek`, which is `ESPIPE`: terminals and
-other streams can't seek.
+function is `ENXIO`, except `lseek`, which is `ESPIPE` (terminals and
+other streams can't seek), and `close`, which only drops the vnode's
+reference (`posix_file_close()`).
 
 One major number can hold several drivers: a `mux` function picks the
 driver for a minor. Major 1 is `/dev/null`, `/dev/zero`, `/dev/random`
@@ -179,8 +180,11 @@ readers.
    edited (`VERASE` erases a character, `VKILL` the line) and given to
    readers only when it ends, with NL, `VEOL` or `^D` (`VEOF`). `^D` at
    the start of a line is an end of file: the next read returns 0.
-   Without `ICANON`, every character goes to readers as it comes, and
-   `VMIN` and `VTIME` say how many a read waits for and how long.
+   Without `ICANON`, every character goes to readers as it comes: a
+   read waits for at least one, and returns what there is. With `VMIN`
+   0, `VTIME` says how long it waits, in tenths of a second, and with
+   both 0 it doesn't wait. A `VMIN` above 1 counts as 1, and there is no
+   timer between characters.
 4. **Echo** (`ECHO`): what's typed is shown, control characters as `^X`;
    an erase is shown as backspace, space, backspace (`ECHOE`).
 
@@ -193,13 +197,22 @@ NL is owed and goes first next time (`nl_owed`).
 
 `ioctl()`s read and change all of this: `TCGETS`, `TCSETS` (and
 `TCSETSW`, `TCSETSF`), `TCFLSH`, `TIOCGWINSZ`, `TIOCSWINSZ`, and the job
-control ones below. What libc's `tcgetattr()`, `tcsetattr()` and
-`cfmakeraw()` call is these.
+control ones below (`TIOCSCTTY`, `TIOCGPGRP`, `TIOCSPGRP`, `TIOCGSID`).
+What libc's `tcgetattr()`, `tcsetattr()` and `cfmakeraw()` call is
+these.
+
+**Flow control** (`IXON`, the default): `^S` (`VSTOP`) stops the
+output, and `^Q` (`VSTART`), or any character with `IXANY`, starts it
+again; neither is input. While it is stopped, programs that write to the
+terminal wait.
+
+**Readiness**: for `select()` and `poll()`, a terminal is readable only
+when it holds input or a pending end of file (`tty_can_read()`), even
+with `VMIN` and `VTIME` 0, as on Linux and the BSDs.
 
 Shortcuts: no output is ever waiting to be sent, so `TCSETSW` is
-`TCSETS` and `tcdrain()` returns at once; there is no flow control
-(`IXON` is set but `^S` and `^Q` do nothing); the speed in `termios`
-isn't used by any driver.
+`TCSETS`, `tcdrain()` returns at once, and `TCSBRK` and `TCXONC` do
+nothing; the speed in `termios` isn't used by any driver.
 
 ### Controlling terminals and job control
 
@@ -210,8 +223,9 @@ the keyboard's signals and may read (see
 [Processes](processes.md) and [Signals](signals.md)).
 
 - The session leader's first terminal it opens becomes its
-  **controlling terminal**, unless it opens it with `O_NOCTTY` or the
-  terminal already belongs to another session (`tty_open()`);
+  **controlling terminal**, unless it opens it with `O_NOCTTY`, the
+  session already has one, or the terminal already belongs to a session
+  (`tty_open()`); `/dev/console` never becomes one;
   `TIOCSCTTY` asks for it explicitly. `/dev/tty` (5, 0) opens the
   caller's controlling terminal, whichever it is.
 - The shell moves jobs to the foreground with `TIOCSPGRP` (`tcsetpgrp()`),
@@ -239,19 +253,21 @@ slave's programs write comes out of the master
 
 Opening `/dev/ptmx` (5, 2) makes a new pty: the descriptor becomes its
 master (major 2, which has no node), and the slave appears in devpts as
-`/dev/pts/N` (major 136, minor N); `TIOCGPTN` says which N. Each side
-has a 4 KiB ring. When the master is closed, the slave's session is hung
-up, the slave's node goes, and slaves still open fail with `ENXIO`.
-`grantpt()` and `unlockpt()` have nothing to do: the slave is the
-opener's from the start, and never locked.
+`/dev/pts/N` (major 136, minor N); `TIOCGPTN` says which N. There are at
+most 256 ptys. Each side has a 4 KiB ring. When the master is closed,
+the slave's session is hung up, the slave's node goes, and slaves still
+open fail with `ENXIO`. `grantpt()` and `unlockpt()` have nothing to do:
+the slave is the opener's from the start, and never locked.
 
 ### The console
 
 `/dev/console` (5, 1) is where init and the kernel write: on AquilaOS,
-the first virtual terminal (below). The kernel's own messages
+the first virtual terminal (below), or, on a machine without virtual
+terminals (aarch64's virt), the first UART. The kernel's own messages
 (`printk()`) go to the foreground virtual terminal once there is one, and
 to a ring that `/dev/kmsg` reads. Before the terminals are
-up, they go through the early console (see [Booting](booting.md)).
+up, and all along without them, they go through the early console (see
+[Booting](booting.md)).
 
 ### Memory devices
 

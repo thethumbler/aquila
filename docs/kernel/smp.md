@@ -15,7 +15,8 @@ once. For the kernel this raises two problems:
   CPU changes something another may have cached, it has to tell it.
 
 This document describes how the kernel solves both, and then how x86
-starts the other CPUs and lets them talk to each other (see
+starts the other CPUs and lets them talk to each other; aarch64 runs on
+one CPU so far (see
 [The kernel and the machine](architecture.md) for the split).
 
 ## The kernel's side
@@ -93,9 +94,9 @@ ready thread, whichever CPU it last ran on: no CPU has its own queue,
 and a thread has no preferred CPU.
 
 - **Ticks**: every CPU has its own timer tick, which charges its
-  running process its time and asks for a switch (`sched_cpu_tick()`).
-  Only the boot CPU's keeps the time, runs the timeouts and wakes the
-  sleepers (`sched_timer_tick()`).
+  running process its time (`sched_cpu_tick()`), and on which the
+  architecture asks for a switch. Only the boot CPU's moves the clock on,
+  runs the timeouts and wakes the sleepers (`sched_timer_tick()`).
 - **Waking an idle CPU**: when a thread becomes ready
   (`sched_thread_ready()`), an idle CPU is asked to run it now, not at
   its next tick (`sched_cpu_wake()`, `arch_cpu_kick()`). `kicked` marks
@@ -156,7 +157,8 @@ FPU instruction after a switch traps, see [Interrupts](interrupts.md));
 each CPU remembers whose state its FPU has (`arch.fpu_thread`). A thread
 switched out has its state saved first (`x86_fpu_switch_out()`), so it
 can go on on any CPU. Any architecture with lazily switched state has to
-do the same.
+do the same; aarch64 switches its FP/SIMD registers lazily too, and each
+CPU remembers whose they are (`arch.fp_thread`).
 
 ## x86: finding the CPU
 
@@ -206,6 +208,19 @@ each one, and the first wake IPI starts its timer
 Without an APIC (`apic=off`), there's no way to start them: AquilaOS
 runs on one CPU.
 
+## aarch64: one CPU
+
+aarch64 runs on the boot CPU only: the other CPUs of the virt machine
+are never started. Its `curcpu()` reads `tpidr_el1`, which
+`aarch64_init()` sets to `cpus[0]`
+(`kernel/arch/aarch64/include/cpu/cpu.h`). The kernel lock is taken and
+let go as on x86, but nothing ever waits for it, so the architecture's
+side has nothing to do: `arch_cpu_kick()`, `arch_lock_spin()` and
+`arch_lock_taken()` are empty
+([`sys/smp.c`](../../kernel/arch/aarch64/sys/smp.c)), and
+`tlb_shootdown()` flushes this CPU's TLB only
+([`mm/pmap.c`](../../kernel/arch/aarch64/mm/pmap.c)).
+
 ## x86: messages between CPUs
 
 The local APIC sends the *inter-processor interrupts* (IPIs), to a CPU
@@ -236,6 +251,8 @@ done it yet, which each clears.
 | `kernel/arch/i386/mm/tlb.c`                  | x86    | TLB shootdown, `arch_lock_spin()`, `arch_lock_taken()` |
 | `kernel/arch/i386/cpu/isr.c`, `platform/misc/irq.c` | x86 | taking the lock on the way in        |
 | `kernel/arch/i386/platform/misc/apic.c`      | PC     | the local APIC: IPIs, each CPU's timer      |
+| `kernel/arch/aarch64/include/cpu/cpu.h`      | aarch64 | `struct arch_cpu`, `curcpu()`              |
+| `kernel/arch/aarch64/sys/smp.c`              | aarch64 | the lock's and the kick's hooks, empty     |
 
 ## References
 

@@ -19,18 +19,23 @@ The kernel is built with the host compiler through
 [`host/x86_64-pc.mk`](host/x86_64-pc.mk) (or
 [`host/i386-pc.mk`](host/i386-pc.mk)), the regular configuration with
 `gcc`/`ld` instead of the cross toolchain. Any gcc with 32-bit support
-works. The libc, system, disk and tcc tests use the system built with the
-cross toolchain (`make`, `make CONFIG=i386-pc`) and are skipped without
-it.
+works. On aarch64 it is the regular configuration,
+[`configs/aarch64-virt.mk`](../configs/aarch64-virt.mk), built with
+`clang`. The libc, system and disk tests use the system built with the
+cross toolchain (`make`, `make CONFIG=i386-pc`), the tcc, curl and bash
+tests its ports (`make ports`), and are skipped without them.
 
-Requirements: `gcc`, `ld`, `cpio`, `qemu-system-x86_64` (and
+Requirements: `gcc`, `ld`, `cpio`, `qemu-system-x86_64` and `python3`
+(the clock, net, tcp, curl and minix tests' helpers on the host), and
 `qemu-system-i386` for i386; for aarch64 `clang`, `ld.lld`,
-`llvm-objcopy` and `qemu-system-aarch64`, the tests built with clang),
-and for the ext2 test `mke2fs`, `e2fsck`,
-`debugfs` and `python3`, for the disk test `sfdisk`, `mkfs.fat`, mtools
-and `fakeroot` (skipped if missing). Build output goes to
-`tests/out/x86_64` (`tests/out` for i386, `tests/out/aarch64` for
-aarch64).
+`llvm-objcopy` and `qemu-system-aarch64`, the tests built with clang.
+These tests are skipped without what they need: ext2 without `mke2fs`,
+`e2fsck` and `debugfs`, minix without `mkfs.minix` and `fsck.minix`,
+disk without `sfdisk`, `mkfs.fat`, mtools, `mke2fs`, `e2fsck`,
+`debugfs` and `fakeroot`. The curl test also needs `openssl`.
+
+Build output goes to `tests/out/x86_64` (`tests/out` for i386,
+`tests/out/aarch64` for aarch64).
 
 ## Tests
 
@@ -82,6 +87,8 @@ void aq_main(void)
 initial stack (the System V ABI's: `argc`, `argv`, `envp`, then the
 auxiliary vector); `aq_check_initial_stack()` checks that stack.
 
-Then add a `test_<name>` function and the name to `ALL_TESTS` in
-`run.sh`. The initrd has `/init`, and empty `/dev`, `/mnt` and `/tmp`
-directories; the initramfs is read-only, mount tmpfs to create files.
+Then, in `run.sh`, add a `test_<name>` function, the name to
+`ALL_TESTS`, and the name to the loop that builds the test programs'
+initrds (`for name in cpu syscalls ...; do`). The initrd has `/init`,
+and empty `/dev`, `/mnt`, `/proc` and `/tmp` directories; the initramfs
+is read-only, mount tmpfs to create files.

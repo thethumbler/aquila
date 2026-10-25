@@ -102,10 +102,13 @@ It has two tables of operations, for two kinds of objects:
   name), `vmknod` (a new entry: file, directory, device node, FIFO,
   symbolic link), `vunlink`, `vlink`, `vrename`, `trunc`, `setattr`
   (store the mode, owner and times), `vget` (a vnode by inode number),
-  `close`, and `map` (map the file's pages, for `mmap`).
+  `ioctl`, `close`, `map` (map the file's pages, for `mmap`), and
+  `vsync` and `sync` (which no filesystem has yet).
 - **`struct fops`**, on open files: `open`, `read`, `write` and `readdir`
-  at the file's offset, `lseek`, `ioctl`, `trunc`, `close`, and three
-  questions: `can_read`, `can_write` (would it wait?) and `eof`.
+  at the file's offset, `lseek`, `ioctl`, `trunc`, `close`, three
+  questions: `can_read`, `can_write` (would it wait?) and `eof`, and
+  `read_timeout` (how long a read with nothing to return may wait: a
+  terminal's `VTIME`).
 
 An operation a filesystem doesn't have is `NULL`, and the VFS answers
 `ENOSYS` (or a sensible default: a file without `lseek` is a pipe,
@@ -272,7 +275,7 @@ once, and the vnode reference goes.
 written. Each file says which queue a reader or writer of it would sleep
 on (`vfs_file_wait_queue()`: the vnode's `read_queue` or `write_queue`, a
 socket's own); the thread registers on all of them (`poll_register()`,
-[`sys/thread.c`](../../kernel/sys/thread.c)) and sleeps. A wakeup of any
+[`sys/waitq.c`](../../kernel/sys/waitq.c)) and sleeps. A wakeup of any
 of those queues wakes it to look again. A file that can't say what it
 would sleep on registers `NULL`, which any wakeup matches.
 
@@ -297,8 +300,8 @@ copy of a page when they write to it. Shared mappings need the
 filesystem's `map` operation, which only devices have (the framebuffer):
 `MAP_SHARED` on a regular file isn't supported.
 
-The cached pages are never written back, and a `write()` to the file
-doesn't update them.
+The cached pages are never written back; a `write()` to the file, or a
+truncate, updates the cached copies.
 
 ## Caching and writing to disk
 
@@ -327,7 +330,6 @@ number: minix keeps its indirect zone tables in one.)
 - No `umount`, no `fsync()`, no record locks, no shared file mappings.
 - Vnode caches don't shrink: a disk file's vnode stays until it's
   removed.
-- `O_APPEND` is accepted but writes ignore it.
 - The kernel runs with interrupts off and one CPU in it at a time (see
   [SMP and the kernel lock](smp.md)), so none of these structures has a
   lock of its own; a thread that sleeps (on a disk read, on a pipe) must
@@ -345,8 +347,8 @@ Nearly nothing. The VFS is written against the kernel's interfaces only:
   `root_dev()` in [`fs/mount.c`](../../kernel/fs/mount.c)) are the PC's
   ATA disks;
 - the disk filesystems read their on-disk structures as they are in
-  memory, which works because x86 is little-endian, as ext2 and minix
-  are.
+  memory, which works because the CPUs AquilaOS runs on (x86, aarch64)
+  are little-endian, as ext2 and minix are.
 
 ## Where it is
 
@@ -368,7 +370,7 @@ Nearly nothing. The VFS is written against the kernel's interfaces only:
 | `kernel/fs/sync.c`                       | kernel | (stubs)                                      |
 | `kernel/dev/blkcache.c`                  | kernel | the disks' block cache                       |
 | `kernel/sys/sys_file.c`                  | kernel | the file system calls, `do_openat()`         |
-| `kernel/sys/thread.c`                    | kernel | `poll_register()`                            |
+| `kernel/sys/waitq.c`                     | kernel | `poll_register()`                            |
 
 ## References
 

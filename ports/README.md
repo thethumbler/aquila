@@ -44,8 +44,11 @@ x86-64, `aarch64-aquila`).
 `build()` runs in the extracted source directory, after applying any
 `<name>/*.patch` (`patch -p1`), with `CC`, `AR`, `RANLIB` and
 `STRIP` set for the system's toolchain (`$TARGET`, `$ARCH` is `i386`,
-`x86_64` or `aarch64`) and `JOBS` for parallel builds. The archive must extract to `<name>-<version>/`, or to the
-directory `ARCHIVE_DIR` names.
+`x86_64` or `aarch64`), `JOBS` for parallel builds and `AQUILA_UAPI`
+pointing at the kernel's ABI headers (`include/uapi`, for host tools
+that generate tables for the target). It installs programs into
+`$DESTDIR`, the root above. The archive must extract to
+`<name>-<version>/`, or to the directory `ARCHIVE_DIR` names.
 
 A port without a usable release archive comes from git: `GIT` (the
 repository) and `COMMIT` (a full commit hash, which pins the contents)
@@ -69,15 +72,15 @@ host's `/usr/lib`.
 | bash       | 5.3.20   | `bash` in `/bin` (5.3 and its official patches to 20): its own readline over ncurses, the C library's malloc; process substitution through named pipes (there is no `/dev/fd`) |
 | ca-certificates | 2026-10-20 | `/etc/ssl/certs/ca-certificates.crt` (also `/etc/ssl/cert.pem`): the CA certificates Mozilla trusts, as curl extracts them |
 | curl       | 8.23.0   | `curl` in `/usr/bin`: HTTP, HTTPS (TLS 1.2 and 1.3 through Mbed TLS, servers verified with ca-certificates), FTP and more; gzip and deflate; names resolved one at a time; no HTTP/2, IDN or LDAP |
-| doomgeneric | e257a09 | `doom` and `xdoom` in `/usr/bin`: Doom on the framebuffer (`/dev/fb0`, 4 times over at 1280x800, Limine's mode; the keyboard of the terminal in front, in `K_MEDIUMRAW`), and in an X window (twice over); Freedoom's IWAD, or another in `/usr/share/games/doom` or given with `-iwad`. No sound |
 | dmenu      | 5.3      | `dmenu` and `dmenu_run` in `/usr/bin`, the menu of dwm (Alt+p) |
+| doomgeneric | e257a09 | `doom` and `xdoom` in `/usr/bin`: Doom on the framebuffer (`/dev/fb0`, 4 times over at 1280x800, Limine's mode; the keyboard of the terminal in front, in `K_MEDIUMRAW`), and in an X window (twice over); Freedoom's IWAD, or another in `/usr/share/games/doom` or given with `-iwad`. No sound |
 | dwm        | 6.5      | `dwm` in `/usr/bin`, a tiling window manager (its default configuration: Alt is the modifier, Alt+Shift+Enter opens st) |
 | expat      | 2.6.4    | library only (XML, for fontconfig)                  |
-| freedoom   | 0.13.0   | `/usr/share/games/doom/freedoom1.wad` (28 MB): Freedoom: Phase 1, free (BSD) game data for Doom |
 | font-cursor-misc | 1.0.4 | the cursor font, for X servers                 |
 | font-dejavu | 2.37    | DejaVu Sans and Sans Mono (regular and bold, TrueType) in `/usr/share/fonts/dejavu`, the fonts of Xft programs |
 | font-misc-misc | 1.1.3  | the fixed width fonts of X (`fixed`, `6x13`, `9x15`, ...) in `/usr/share/fonts/X11/misc` (BDF, there is no `bdftopcf`): Unicode, and ISO 8859-1 (made by the recipe) which the usual names are |
 | fontconfig | 2.15.0   | library, `/etc/fonts`, and `fc-cache`, `fc-list` and `fc-match` in `/usr/bin` |
+| freedoom   | 0.13.0   | `/usr/share/games/doom/freedoom1.wad` (28 MB): Freedoom: Phase 1, free (BSD) game data for Doom |
 | freetype   | 2.13.3   | library only (the font rasterizer)                  |
 | kilo       | 323d93b  | `kilo` in `/usr/bin`                                |
 | libfontenc | 1.1.8    | library only (for libXfont)                         |
@@ -100,13 +103,13 @@ host's `/usr/lib`.
 | libxt      | 1.3.1    | library only (the X Toolkit Intrinsics)             |
 | lua        | 5.5.1    | `lua` and `luac` in `/usr/bin`                      |
 | mbedtls    | 3.6.7    | library only (TLS and its cryptography, for curl): the kernel's `/dev/urandom` for entropy; without its own sockets and timers |
-| microwindows | 969eae6 | `microwindows` in `/usr/bin`: Nano-X, a small windowing system on the framebuffer, and its demos (Nuklear among them) in `/usr/lib/microwindows`; `microwindows` opens the demos' launcher, `microwindows nxterm` a terminal. The mouse is `/dev/mouse`, the keyboard the terminal it runs in, in the foreground. x86 only. MPL 1.1 |
+| microwindows | 969eae6 | `microwindows` in `/usr/bin`: Nano-X, a small windowing system on the framebuffer, and its demos (Nuklear's, nxchess and nxscribble among them; GIF images) in `/usr/lib/microwindows`; `microwindows` opens the demos' launcher, `microwindows nxterm` a terminal. The mouse is `/dev/mouse`, the keyboard the terminal it runs in, in the foreground. x86 only. MPL 1.1 or GPLv2 |
 | ncurses    | 6.6      | library only, wide characters, the vt100, ansi, linux, xterm and xterm-256color descriptions built in (no terminfo database) |
 | st         | 0.9.2    | `st` in `/usr/bin`, the terminal of dwm (Xft fonts, TERM=xterm-256color) |
-| tcc        | mob e23dabe | `tcc` (also `cc`) in `/usr/bin`, compiling static programs on AquilaOS; with the C library's headers in `/usr/include` and archives in `/usr/lib`; no `-run` (no `mprotect()`) |
+| tcc        | 0.9.28rc (e23dabe) | `tcc` (also `cc`) in `/usr/bin`, compiling static programs on AquilaOS; with the C library's headers in `/usr/include` and archives in `/usr/lib`; no `-run` (no `mprotect()`) |
 | tinyx      | 1.2.0 (feab72c) | `Xfbdev` (also `X`) and `startx` (X and twm with an xterm, or `~/.xinitrc`) in `/usr/bin`: X on the framebuffer, the keyboard and mouse of a virtual terminal; clients through a Unix socket (`:0`). Its changes to X.Org's code are GPLv3 |
-| unixbench  | 6.0.1    | UnixBench's index tests in `/usr/lib/unixbench`, and `ubench` in `/usr/bin` (its own `ubench.c`): what UnixBench's `Run` does for the index, without Perl; `ubench -c 4` runs 4 copies of each test at once. No graphics tests. GPLv2 |
 | twm        | 1.0.13.1 | `twm` in `/usr/bin`, the window manager of X        |
+| unixbench  | 6.0.1    | UnixBench's index tests in `/usr/lib/unixbench`, and `ubench` in `/usr/bin` (its own `ubench.c`): what UnixBench's `Run` does for the index, without Perl; `ubench -c 4` runs 4 copies of each test at once. No graphics tests. GPLv2 |
 | vis        | 0.9      | `vis` in `/usr/bin`, without Lua (no syntax highlighting) |
 | xcb-proto  | 1.17.0   | for libxcb: the protocol in XML, generated on the build host |
 | xorgproto  | 2024.1   | headers only (X protocol)                           |

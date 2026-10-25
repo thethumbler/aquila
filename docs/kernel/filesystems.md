@@ -49,8 +49,9 @@ filesystem is chosen at boot ([`fs/mount.c`](../../kernel/fs/mount.c),
 read by the filesystem `rootfstype=` names (ext2 by default), or else the
 initramfs.
 
-What a running system has mounted (`/proc/mounts`), set up by the boot
-script (`rootfs/etc/runit/1`):
+What a running system has mounted (`/proc/mounts`): devfs on `/dev` by
+the kernel (`kmain()`), the rest by the boot script
+(`rootfs/etc/runit/1`):
 
 ```
 none /dev devfs
@@ -72,8 +73,8 @@ directory's `p` is a linked list of entries, each a name and a vnode; a
 directory's `..` is one of its entries, the parent's vnode, as it would
 be on a disk, so `rename()` moves it with the directory. The vnodes are
 always in memory, and a vnode's inode number is its address. `vmknod`,
-`vunlink`, `vlink`, `vrename`, `readdir` and `finddir` are pseudofs's; a
-file's contents are the filesystem's own.
+`vunlink`, `vlink`, `vrename`, `readdir`, `finddir`, `setattr` and
+`close` are pseudofs's; a file's contents are the filesystem's own.
 
 A file whose last link is removed stays while it's open; the last
 `close` frees it.
@@ -234,11 +235,14 @@ What AquilaOS does with it:
 `e2fsck` is the test: the `ext2` test writes, truncates and removes files
 on a disk image, then has `e2fsck` check it.
 
-What it leaves out: revision 1's extras beyond the inode size (no
-feature flags are checked; ext3's journal, extents and htree directories
-aren't supported), files over 4 GiB, extended attributes, and device
-nodes keep no device number. The superblock's mount count and state
-aren't updated.
+Revision 1's feature flags are checked: only `filetype`,
+`sparse_super` and `large_file` (what `mke2fs -t ext2` uses) are
+accepted, and any other refuses the mount. A device node's number is
+kept in its first block pointer, as Linux keeps it.
+
+What it leaves out: ext3's journal, extents and htree directories, files
+over 4 GiB, and extended attributes. The superblock's mount count and
+state aren't updated.
 
 ### minix
 

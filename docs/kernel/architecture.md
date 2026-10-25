@@ -19,8 +19,8 @@ machine it is.
 | Layer            | What it is                                              | Where                                   |
 |------------------|---------------------------------------------------------|-----------------------------------------|
 | **The kernel**   | the design: processes, memory, files, devices, networking | `kernel/core`, `mm`, `sys`, `fs`, `dev`, `net` |
-| **The architecture** | the CPU: its modes, registers, page tables, traps, context switch | `kernel/arch/i386/` (`boot`, `cpu`, `mm`, `sys`) |
-| **The platform** | the machine around the CPU: how it boots, its interrupt controllers, timers, firmware tables | `kernel/arch/i386/platform/` |
+| **The architecture** | the CPU: its modes, registers, page tables, traps, context switch | `kernel/arch/i386/` (`boot`, `cpu`, `earlycon`, `mm`, `sys`), `kernel/arch/aarch64/` |
+| **The platform** | the machine around the CPU: how it boots, its interrupt controllers, timers, firmware tables | `kernel/arch/i386/platform/`, `kernel/arch/aarch64/platform/` |
 
 - **The kernel** is written in plain C against interfaces. It doesn't know
   what a page table entry looks like or how an interrupt is acknowledged.
@@ -36,10 +36,16 @@ machine it is.
   "Devices: drivers and the platform" below).
   Another x86 machine could differ here and not in the architecture.
 
+aarch64 is a second implementation of both: the architecture in
+`kernel/arch/aarch64/`, and QEMU's virt machine as its platform (see
+"What a new architecture needs" below).
+
 Drivers sit in between. A driver in `kernel/dev/` is generic code for a
 particular device (an e1000 network card, an ATA disk, an 8250 serial
 port), which could be on any machine that has the device; it reaches the
-hardware through the platform's I/O functions and interrupts.
+hardware through the architecture's I/O functions (`io_in8()` and the
+others, `cpu/io.h`) at the addresses the platform gives it, and through
+interrupts.
 
 ### Devices: drivers and the platform
 
@@ -79,9 +85,13 @@ The kernel and the architecture meet in three ways.
 ### Functions the architecture provides
 
 Every function the kernel needs from the machine is declared in
-`kernel/include/core/arch.h` and called `arch_*`, or is one of the
-`pmap_*` functions of `kernel/include/mm/pmap.h`. An architecture
-implements all of them:
+`kernel/include/`, mostly in `core/arch.h`, and called `arch_*`, or is
+one of the `pmap_*` functions of `mm/pmap.h`. A few are declared next to
+what uses them: `arch_copy_user()` in `sys/uaccess.h`, `arch_cpu_kick()`
+in `sys/cpu.h`, `arch_lock_spin()` and `arch_lock_taken()` in
+`sys/lock.h`, and the interrupts' `irq_install()` and `irq_uninstall()`
+in `dev/irq.h`. An architecture implements all of them except
+`arch_msi_alloc()`, which is optional (a weak symbol: aarch64 has none):
 
 | What                        | Functions                                                         |
 |-----------------------------|-------------------------------------------------------------------|
@@ -106,25 +116,32 @@ stack pointer.
 Some things the kernel needs are types and constants, not functions: how
 big a physical address is, where user space ends, what a CPU's
 machine-specific state is. These come from headers the architecture
-overrides. The include path lists the platform's headers first, then the
-architecture's, then the kernel's:
+overrides. The include path lists the ABI headers first, then the
+platform's headers, then the architecture's, then the kernel's:
 
 ```
--I kernel/arch/i386/platform/pc/include
--I kernel/arch/i386/include
+-I include/uapi
+-I kernel/arch/aarch64/platform/virt/include
+-I kernel/arch/aarch64/include
 -I kernel/include
+-I kernel
 ```
 
-So `#include <mm/mm.h>` finds `kernel/arch/i386/include/mm/mm.h` first,
-which defines what is x86's and then includes the kernel's own with
-`#include_next <mm/mm.h>`. The headers completed this way:
+(That's aarch64's. The PC has no directory of platform headers: its
+headers are in the architecture's, `core/platform.h` and
+`platform/misc.h`.)
+
+So `#include <mm/mm.h>` finds `kernel/arch/<arch>/include/mm/mm.h` first,
+which defines what is the architecture's and then includes the kernel's
+own with `#include_next <mm/mm.h>`. The headers completed this way:
 
 | Header          | What the architecture adds                                        |
 |-----------------|-------------------------------------------------------------------|
 | `config.h`      | `ARCH_BITS` (32 or 64), the machine's name for `uname`           |
 | `core/system.h` | `PAGE_SIZE`, and how much a page table maps                       |
 | `core/arch.h`   | `struct x86_thread` (a thread's registers), `USER_STACK`, `KERN_STACK_SIZE`, interrupts on and off |
-| `cpu/cpu.h`     | `struct arch_cpu` (a CPU's GDT, TSS, page tables), `curcpu()`, I/O ports |
+| `cpu/cpu.h`     | `struct arch_cpu` (a CPU's GDT, TSS, page tables), `curcpu()`     |
+| `cpu/io.h`      | `io_in8()`, `io_out8()` and the others: a device's registers, ports or memory |
 | `mm/mm.h`       | `paddr_t`, `vaddr_t`, the kernel's address space layout, `PHYS2VIRT()` |
 | `mm/pmap.h`     | `struct pmap`, an address space's page tables                     |
 | `boot/boot.h`   | the boot loader's information to `struct boot`                    |
@@ -160,14 +177,22 @@ with:
 - the headers above;
 - an entry from its boot loader that sets up the CPU, turns on paging,
   fills in a `struct boot` and calls `kmain()` (see [Booting](booting.md));
+- an early console, for `printk()` before the terminals are up
+  (`earlycon/`);
 - trap and interrupt entry that ends in the calls in the last table (see
   [Interrupts](interrupts.md));
 - the `arch_*` and `pmap_*` functions;
+- a platform: a `platform_init()` that the architecture calls before
+  `kmain()`, which sets up the interrupt controller and gives the PCI
+  host bridge to `pci_host_set()`; `irq_install()` and `irq_uninstall()`
+  over that interrupt controller; and the table of the devices no bus
+  finds, `platform_devices[]`;
 - a linker script and a build configuration (`configs/`).
 
 `kernel/arch/aarch64/` is the second one: the CPU's part, and QEMU's
 virt machine as its platform (`platform/virt/`: the GIC, the generic
-timer, the PL031 clock, PSCI, the devicetree).
+timer, the PL031 clock, PSCI, the devicetree, and its devices' table,
+the PL011 UART).
 
 ## Where the line is blurred
 
@@ -181,15 +206,15 @@ where x86 still shows through in generic code:
   x86 kernel's mapping of low memory, at the CRT controller's ports.
   Those addresses are VGA's own, any VGA card decodes them, but the
   mapping is x86's.
-- **The platform's interface** (`platform_init()`,
-  `platform_timer_setup()`) is x86's own, in
-  `kernel/arch/i386/include/core/platform.h`: the architecture calls it,
-  the kernel doesn't.
-- **System call restarts** are explained in `sys/sys_signal.c` in terms of
-  x86 (`x86_return_to_user()`), though the decision is the architecture's.
+- **The platform's interface** (`platform_init()`, and on x86
+  `platform_timer_setup()`) is each architecture's own, declared in its
+  headers (`kernel/arch/i386/include/core/platform.h`,
+  `kernel/arch/aarch64/platform/virt/include/platform/virt.h`), not the
+  kernel's: the architecture calls it, the kernel doesn't.
 
 When reading the code, a name tells you the layer: `arch_*` is the
-interface, `x86_*` is the architecture's or platform's own, anything else
+interface, `x86_*` and `aarch64_*` are the architecture's or platform's
+own, anything else
 in `kernel/arch/` is too, and everything outside `kernel/arch/` is the
 kernel.
 
@@ -204,6 +229,7 @@ kernel.
 | `kernel/include/boot/boot.h`             | `struct boot`: what the kernel gets at boot  |
 | `kernel/arch/i386/include/`              | x86's headers                                |
 | `kernel/arch/i386/{boot,cpu,mm,sys}/`    | x86: boot, CPU, paging, threads and traps    |
+| `kernel/arch/i386/earlycon/`             | x86's early console                          |
 | `kernel/arch/i386/platform/`             | the PC (`pc/`, `misc/`)                      |
 | `kernel/arch/aarch64/`                   | aarch64, and QEMU's virt machine (`platform/virt/`) |
 | `kernel/include/dev/irq.h`               | devices' interrupts                          |

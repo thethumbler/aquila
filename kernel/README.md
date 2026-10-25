@@ -5,8 +5,8 @@ How it works, subsystem by subsystem, is in
 
 | directory  |                                                              |
 |------------|--------------------------------------------------------------|
-| `core/`    | `kmain()`, printk, panic, kernel arguments, module init      |
-| `mm/`      | physical pages (buddy), the kernel heap (kvmem), address spaces, page faults |
+| `core/`    | `kmain()`, printk, kernel arguments, module init, the wall clock (`panic()` is in `include/core/panic.h`) |
+| `mm/`      | physical pages (buddy), the kernel heap (slabs and kvmem), address spaces, vm objects (the page cache), page faults |
 | `sys/`     | processes, threads, the scheduler, system calls, signals     |
 | `fs/`      | the VFS, and initramfs, tmpfs, devfs, devpts, procfs, ext2, minix |
 | `dev/`     | the device layer and the drivers                             |

@@ -40,23 +40,23 @@ Ctrl-A X quits QEMU. Then:
    minutes), then `make run` boots it with a shell, the core utilities
    and logins, as below.
 
-For aarch64, `make run-min CONFIG=aarch64-virt` (needs `clang`, `ld.lld`
-and `qemu-system-aarch64`); for i386, `CONFIG=i386-pc` (gcc with 32-bit
-support).
+For aarch64, `make run-min CONFIG=aarch64-virt` (needs `clang`, `ld.lld`,
+`llvm-objcopy` and `qemu-system-aarch64`); for i386, `CONFIG=i386-pc`
+(gcc with 32-bit support, and `qemu-system-i386`).
 
 ## Building
 
 Everything is built from source into `build/` (the x86-64 system into
 `build/x86_64`). On a Linux host you need a C/C++ compiler with 32-bit
 support, `make`, `bison`, `flex`, `texinfo`, GMP, MPFR and MPC
-development headers, `wget`, `nasm`, `cpio`, `xorriso` and
-`qemu-system-x86_64` (and `gperf`, autoconf, automake and libtool for
-the ports). On Debian/Ubuntu:
+development headers, `wget`, `git`, `nasm`, `cpio`, `xorriso` and
+`qemu-system-x86_64` (and `gperf`, autoconf, automake, libtool,
+`pkg-config` and `python3` for the ports). On Debian/Ubuntu:
 
 ```
 sudo apt install build-essential gcc-multilib bison flex texinfo libgmp-dev \
-    libmpfr-dev libmpc-dev wget nasm cpio xorriso qemu-system-x86 gperf \
-    autoconf automake libtool
+    libmpfr-dev libmpc-dev wget git nasm cpio xorriso qemu-system-x86 gperf \
+    autoconf automake libtool pkg-config python3
 ```
 
 Then:
@@ -125,11 +125,33 @@ The default is x86-64. AquilaOS also runs on i386 (using at most
 `build/toolchain`), `CONFIG=i386-pc` selects it:
 
 ```
-make toolchain CONFIG=i386-pc       # i686-aquila gcc/binutils and newlib
+make toolchain CONFIG=i386-pc       # i686-aquila gcc/binutils, newlib and Limine
 make CONFIG=i386-pc                 # build/
 make hdd CONFIG=i386-pc             # build/aquila.img
 make test CONFIG=i386-pc            # or tests/run.sh -a i386
 ```
+
+### aarch64
+
+AquilaOS also runs on QEMU's virt machine (aarch64), one CPU, built into
+`build/aarch64` with an aarch64-aquila toolchain (also in
+`build/toolchain`); the kernel is built with `clang` and `ld.lld`.
+`CONFIG=aarch64-virt` selects it:
+
+```
+make toolchain CONFIG=aarch64-virt  # aarch64-aquila gcc/binutils and newlib
+make CONFIG=aarch64-virt            # build/aarch64/
+make ports CONFIG=aarch64-virt      # stops at TinyX, which doesn't build there yet
+make run CONFIG=aarch64-virt        # console on stdio (the PL011, /dev/ttyS0)
+make test CONFIG=aarch64-virt       # or tests/run.sh -a aarch64
+```
+
+There are no virtual terminals (no framebuffer), so the logins are on the
+serial console only, and the graphical ports (TinyX, Microwindows) have
+nothing to draw on; `ARCH=aarch64 mk/recipes.sh ports <name>` builds
+the others one by one. `make iso`, `make hdd` and the targets that use
+them are x86's: they boot with Limine, a PC boot loader, and the kernel
+has no disk driver on aarch64. `make live` is i386's.
 
 ## Testing
 
@@ -150,6 +172,9 @@ comments in the sources:
 make docs           # build/docs/kernel/api/index.html (needs doxygen)
 make docs-serve     # the same, on http://localhost:8000/
 ```
+
+They are also published on GitHub Pages from `main`, by
+[.github/workflows/docs.yml](.github/workflows/docs.yml).
 
 ## Layout
 
@@ -210,13 +235,17 @@ make docs-serve     # the same, on http://localhost:8000/
 - [X] i8042   (PS/2 controller)
 - [X] ps2kbd  (PS/2 keyboard)
 - [X] ps2mouse (PS/2 mouse, /dev/mouse as Linux's /dev/psaux)
-- [X] ramdev  (memory mapped devices)
+- [X] ramdisk (the initrd as a block device)
+- [X] memdev  (/dev/null, /dev/zero, /dev/random, /dev/urandom, /dev/kmsg)
 - [X] vt      (virtual terminals on the framebuffer or VGA text mode;
               graphics, raw keyboard and switching as the Linux console)
-- [X] ata     (ATA hard disks, PIO mode)
+- [X] pty     (pseudo-terminals: /dev/ptmx and /dev/pts)
+- [X] ata     (ATA hard disks, bus master DMA, or PIO with `ata.nodma`)
 - [X] fbdev   (framebuffer, VESA; the Linux framebuffer API)
 - [X] 8250    (UART: COM1, COM2)
 - [X] pl011   (ARM's UART, aarch64)
+- [X] pci     (configuration mechanism #1, and ECAM on aarch64)
+- [X] rtc     (the date: the PC's CMOS clock, the PL031 on aarch64)
 - [X] e1000   (Intel 8254x Ethernet, and the 82574L with MSI: QEMU's
               e1000 and e1000e; on aarch64 too, over PCI Express)
 
@@ -239,13 +268,21 @@ make docs-serve     # the same, on http://localhost:8000/
 - [X] aqbox   (system tools)
 - [X] kilo    (text editor, port)
 - [X] vis     (vi-like editor, port) on ncurses (port)
+- [X] bash    (shell, port)
 - [X] Lua     (port)
 - [X] tcc     (C compiler, port), building programs on AquilaOS
+- [X] curl    (port): HTTPS through Mbed TLS (port), with Mozilla's CA
+              certificates (port)
 - [X] TinyX   (Xfbdev, X server on the framebuffer, port) with X.Org's
               fixed and cursor fonts, Xlib and the X Toolkit (ports)
 - [X] twm and xterm (ports), `startx`
-- [X] Microwindows (Nano-X, port): windows on the framebuffer, its
-              demos, Nuklear's among them, and nxterm
+- [X] dwm, st and dmenu (ports), with Xft, fontconfig, FreeType and
+              DejaVu fonts (ports)
+- [X] Doom    (doomgeneric with Freedoom, ports): on the framebuffer and
+              in an X window
+- [X] Microwindows (Nano-X, port, x86 only): windows on the framebuffer,
+              its demos, Nuklear's, nxchess and nxscribble among them,
+              and nxterm
 - [X] UnixBench (port): `ubench`, its index without Perl
 
 ## License
@@ -266,6 +303,11 @@ Third-party code keeps its own license:
 The toolchain patches in [toolchain/patches/](toolchain/patches/) modify
 binutils and GCC (GPLv3) and newlib (various free licenses); the patched
 tools remain under those licenses. contrib/ and ports/ software is
-fetched from upstream and keeps its own license (dash: BSD, sbase: MIT,
-kilo: BSD 2-Clause, Lua: MIT, ncurses: MIT-style, libtermkey: MIT,
-vis: ISC, UnixBench: GPLv2, Microwindows: MPL 1.1).
+fetched from upstream and keeps its own license, among them: dash,
+netcat, runit and Freedoom: BSD; kilo: BSD 2-Clause; sbase, sdhcp, Lua,
+libtermkey, expat, dwm, st and dmenu: MIT; ncurses, xterm, curl,
+fontconfig and the X.Org libraries: MIT-style; X.Org's misc and cursor
+fonts: public domain; vis: ISC; zlib: zlib; FreeType: FreeType License
+or GPLv2; DejaVu fonts: Bitstream Vera; Mbed TLS: Apache 2.0 or GPLv2
+(or later); tcc: LGPLv2.1; bash: GPLv3; TinyX: GPLv3; UnixBench and
+doomgeneric: GPLv2; Microwindows: MPL 1.1 or GPLv2.

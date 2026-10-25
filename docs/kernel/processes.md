@@ -13,7 +13,7 @@ they're created (`fork`, `exec`, threads), how they end (`exit`, `wait`,
 zombies), how the scheduler shares the CPUs between them, and how a
 thread sleeps until something happens. The design is the kernel's, the
 same on every machine; switching from one thread to another is the
-architecture's, described at the end for x86 (see
+architecture's, described at the end for x86 and aarch64 (see
 [The kernel and the machine](architecture.md)).
 
 ## The kernel's side
@@ -39,8 +39,10 @@ A process is a `struct proc` ([`include/sys/proc.h`](../../kernel/include/sys/pr
 | `exit`, `running`, `zombie`   | how it ended, and whether it has                        |
 | `stopped`, `wait_event`       | job control: stopped by which signal, what `waitpid` has to say |
 
-Every process is on one list, `procs`. A pid is the lowest free number in
-a bitmap of 4096 (`proc_pid_alloc()`, [`sys/proc.c`](../../kernel/sys/proc.c));
+Every process is on one list, `procs`. A pid is the next free number
+after the last one given out, in a bitmap of 4096, wrapping around and
+skipping the numbers a process group or a session still uses as its id
+(`proc_pid_alloc()`, [`sys/proc.c`](../../kernel/sys/proc.c));
 a process is found by its pid by walking the list (`proc_pid_find()`).
 Two are special:
 
@@ -250,8 +252,10 @@ with several threads has one, as POSIX says.
 3. `binfmt_load()` ([`sys/binfmt/binfmt.c`](../../kernel/sys/binfmt/binfmt.c))
    finds a *binary format* that recognises the file. There is one, ELF
    ([`sys/binfmt/elf.c`](../../kernel/sys/binfmt/elf.c)), which takes the
-   kernel's own class and machine only (a 32-bit i386 program on the i386
-   kernel, a 64-bit x86_64 one on the x86_64 kernel).
+   kernel's own class and machine only (`ELF_MACHINE`, from the
+   architecture's `config.h`: a 32-bit i386 program on the i386 kernel, a
+   64-bit x86_64 one on the x86_64 kernel, an aarch64 one on the aarch64
+   kernel).
 4. Then the *point of no return*: the other threads of the process end
    (`proc_threads_exec()`), the old address space is destroyed, and the
    ELF file's `PT_LOAD` segments are mapped in its place. Nothing is read
@@ -305,15 +309,17 @@ A process makes more threads with `thread_create()`, the C library's
 `sys_thread_create()`). It gives a user stack, the C library's start
 routine, the thread's function and its argument; the architecture makes
 the thread's registers and kernel stack (`arch_thread_create()`), and the
-thread is put on the ready queue. Its id is the number of threads the
-process has, plus one.
+thread is put on the ready queue. Its id is the next one in its
+process (`tid_last`): threads end in any order, so their count can't be
+the next id.
 
 - `thread_exit()` ends the calling thread: it becomes a `ZOMBIE`, its
   exit value kept, and its kernel stack is freed; it stays on its
-  process's list until the process exits. The last thread to exit ends
-  the process, as `exit(0)`.
+  process's list until it's joined, or the process exits. The last thread
+  to exit ends the process, as `exit(0)`.
 - `thread_join()` sleeps on the process's `thread_join` queue until the
-  thread is a zombie, and returns its value.
+  thread is a zombie, writes its value out, and frees what is left of
+  it.
 
 A process's threads share its signal mask and pending signals: POSIX
 gives each thread its own mask, AquilaOS doesn't (see
@@ -346,8 +352,10 @@ parent that ignores `SIGCHLD`, or set `SA_NOCLDWAIT`, never has zombies:
 its children are reaped as they exit.
 
 The status is the classic UNIX encoding: an exit code in bits 8 to 15, a
-terminating signal in bits 0 to 6, a stop as the signal in bits 8 to 15
-and `0x7f` below. The C library's `WIFEXITED()` and the others read it.
+terminating signal in bits 0 to 6 (the kernel puts it in bits 8 to 15
+too, `PROC_EXIT(sig, sig)`), a stop as the signal in bits 8 to 15 and
+`0x7f` below, a continue as `0xffff`. The C library's `WIFEXITED()` and
+the others read it.
 
 The thread that runs `proc_kill()` for its own process can't free the
 kernel stack it runs on. It goes last: it switches to its CPU's idle
@@ -364,8 +372,9 @@ From the kernel's side, a switch is two calls:
   packets) and goes to the end of the queue. When the thread is next chosen, it
   goes on from `arch_sleep()` as if the call had just returned.
 - `arch_thread_switch(thread)`: run this thread, where it stopped.
-  `arch_thread_spawn(thread)` runs one that never ran, from the start
-  of its user-mode context (`thread->spawned` says which).
+  `arch_thread_spawn(thread)` runs one that never ran, or that just
+  started a new program, from the start of its user-mode context
+  (`thread->spawned` says which).
 
 What "where it stopped" means, how registers are saved, which stack
 holds them: that's the architecture's.
@@ -379,7 +388,7 @@ On x86 a thread's `arch` is a `struct x86_thread`
 |---------------------------|---------------------------------------------------------|
 | `kstack_base`, `kstack`   | its kernel stack: where it was allocated, and its top   |
 | `eip`/`rip`, `esp`/`rsp`, `ebp`/`rbp`, `eflags`/`rflags` | where it goes on: in the kernel when it was switched away from, or in user mode when it never ran |
-| `eax`/`rax`               | a system call's result, for a thread that never ran (a new thread, `fork`'s child) |
+| `eax`/`rax`               | a system call's result, for a thread that never ran     |
 | `regs`                    | its user-mode registers, saved at the top of its kernel stack when it entered the kernel |
 | `fpu_context`, `fpu_enabled` | its FPU and SSE state, once it used them             |
 
@@ -442,31 +451,76 @@ Each CPU remembers whose state its FPU has (`fpu_thread`). A forked
 child gets a copy of its parent's state; a signal handler starts with a
 clean FPU, and `sigreturn` puts the old state back.
 
+## aarch64: a thread's registers and switching
+
+On aarch64 a thread's `arch` is a `struct aarch64_thread`
+([`include/core/arch.h`](../../kernel/arch/aarch64/include/core/arch.h)):
+its kernel stack (16 KiB), `ctx`, where it goes on in the kernel, `regs`,
+its user-mode registers saved on its kernel stack, `pc`, `sp` and `x0` to
+`x2` for a thread that never ran, and `fpsimd`, its FP/SIMD state.
+
+Switching works as on x86, with `setjmp()` and `longjmp()` in place of
+`SWITCH_OUT` ([`cpu/switch.S`](../../kernel/arch/aarch64/cpu/switch.S)):
+`arch_sleep()` and `aarch64_preempt()` save the registers a call keeps,
+the frame pointer, the link register and the stack pointer
+(`aarch64_ctx_save()`, which returns 0), then call `kernel_idle()` or
+`schedule()`. `arch_thread_switch()` ([`sys/thread.c`](../../kernel/arch/aarch64/sys/thread.c))
+loads the next thread's page tables, then its `ctx` (`aarch64_ctx_load()`),
+and `aarch64_ctx_save()` returns again, with 1, in that thread. There is
+no TSS: user mode comes back on the stack the kernel left in `SP_EL1`
+when it returned to it, the top of the thread's kernel stack. A thread
+that never ran goes to user mode with `aarch64_jump_user()`, an `eret`.
+
+`arch_proc_fork()` ([`sys/fork.c`](../../kernel/arch/aarch64/sys/fork.c))
+copies only the fork call's saved registers, to the top of the child's
+kernel stack, and sets the child to go on at `aarch64_fork_return` (in
+`cpu/vectors.S`), which lets go of the kernel lock and returns to user
+mode from that copy, with 0 in `x0`.
+
+The FP/SIMD registers (`v0` to `v31`, `FPSR`, `FPCR`: 528 bytes) are
+switched lazily too ([`cpu/fpsimd.c`](../../kernel/arch/aarch64/cpu/fpsimd.c)).
+A switch sets `CPACR_EL1.FPEN` so that user mode's use traps, unless the
+registers hold the thread's values already (`aarch64_fpsimd_switch()`).
+At the trap, `aarch64_fpsimd_trap()` saves the previous owner's values
+(`fp_thread`), loads the thread's (zeros, the first time), and lets user
+mode use them. There is no saving when a thread is switched away from:
+aarch64 runs on one CPU so far, so the state never moves to another. A
+forked child gets a copy of its parent's state, a new program starts
+with zeros, and a signal handler starts with the registers as they were.
+
 ## Where it is
 
-| File                                    | Layer  | What                                         |
-|-----------------------------------------|--------|----------------------------------------------|
-| `kernel/include/sys/proc.h`             | kernel | processes, groups, sessions                  |
-| `kernel/include/sys/thread.h`           | kernel | threads                                      |
-| `kernel/sys/proc.c`                     | kernel | pids, groups, sessions, `proc_kill()`, `proc_reap()`, descriptors |
-| `kernel/sys/thread.c`                   | kernel | threads                                      |
-| `kernel/sys/waitq.c`, `include/sys/waitq.h` | kernel | wait queues, `poll_register()`         |
-| `kernel/include/ds/list.h`              | kernel | lists linked through their entries          |
-| `kernel/sys/kthread.c`                  | kernel | process 0 and kernel threads                 |
-| `kernel/sys/sched.c`                    | kernel | the scheduler, the tick, timed waits, alarms |
-| `kernel/sys/callout.c`                  | kernel | callouts                                     |
-| `kernel/sys/fork.c`                     | kernel | `fork()`                                     |
-| `kernel/sys/execve.c`                   | kernel | `execve()`, scripts                          |
-| `kernel/sys/binfmt/`                    | kernel | binary formats: ELF                          |
-| `kernel/sys/sys_proc.c`                 | kernel | `exit`, `waitpid`, threads, `setpgid`, `setsid` |
-| `kernel/sys/sys_signal.c`               | kernel | `nanosleep`, `setitimer`                     |
-| `kernel/arch/i386/include/core/arch.h`  | x86    | `struct x86_thread`, stack sizes, `USER_STACK` |
-| `kernel/arch/i386/sys/thread.c`         | x86    | making, spawning, switching, killing threads |
-| `kernel/arch/i386/sys/sched.c`          | x86    | the idle loop, the tick's handler, killing the current thread |
-| `kernel/arch/i386/sys/fork.c`           | x86    | the child's thread                           |
-| `kernel/arch/i386/sys/execve.c`, `proc.c` | x86  | the new program's stack and registers        |
-| `kernel/arch/i386/cpu/cpu.S`            | x86    | `SWITCH_OUT`, `x86_goto`, `x86_jump_user`, `x86_fork_return` |
-| `kernel/arch/i386/cpu/fpu.c`            | x86    | the lazy FPU                                 |
+| File                                        | Layer   | What                                         |
+|---------------------------------------------|---------|----------------------------------------------|
+| `kernel/include/sys/proc.h`                 | kernel  | processes, groups, sessions                  |
+| `kernel/include/sys/thread.h`               | kernel  | threads                                      |
+| `kernel/sys/proc.c`                         | kernel  | pids, groups, sessions, `proc_kill()`, `proc_reap()`, descriptors |
+| `kernel/sys/thread.c`                       | kernel  | threads                                      |
+| `kernel/sys/waitq.c`, `include/sys/waitq.h` | kernel  | wait queues, `poll_register()`               |
+| `kernel/include/ds/list.h`                  | kernel  | lists linked through their entries           |
+| `kernel/sys/kthread.c`                      | kernel  | process 0 and kernel threads                 |
+| `kernel/sys/sched.c`                        | kernel  | the scheduler, the tick, timed waits, alarms |
+| `kernel/sys/callout.c`                      | kernel  | callouts                                     |
+| `kernel/sys/fork.c`                         | kernel  | `fork()`                                     |
+| `kernel/sys/execve.c`                       | kernel  | `execve()`, scripts                          |
+| `kernel/sys/binfmt/`                        | kernel  | binary formats: ELF                          |
+| `kernel/sys/sys_proc.c`                     | kernel  | `exit`, `waitpid`, threads, `setpgid`, `setsid` |
+| `kernel/sys/sys_signal.c`                   | kernel  | `nanosleep`, `setitimer`                     |
+| `kernel/arch/i386/include/core/arch.h`      | x86     | `struct x86_thread`, stack sizes, `USER_STACK` |
+| `kernel/arch/i386/sys/thread.c`             | x86     | making, spawning, switching, killing threads |
+| `kernel/arch/i386/sys/sched.c`              | x86     | the idle loop, the tick's handler, killing the current thread |
+| `kernel/arch/i386/sys/fork.c`               | x86     | the child's thread                           |
+| `kernel/arch/i386/sys/execve.c`             | x86     | where a new program starts: its instruction and stack pointers |
+| `kernel/arch/i386/sys/proc.c`               | x86     | init's thread                                |
+| `kernel/arch/i386/cpu/cpu.S`                | x86     | `SWITCH_OUT`, `x86_goto`, `x86_jump_user`, `x86_fork_return` |
+| `kernel/arch/i386/cpu/fpu.c`                | x86     | the lazy FPU                                 |
+| `kernel/arch/aarch64/include/core/arch.h`   | aarch64 | `struct aarch64_thread`, stack sizes, `USER_STACK` |
+| `kernel/arch/aarch64/sys/thread.c`          | aarch64 | making, spawning, switching, killing threads |
+| `kernel/arch/aarch64/sys/sched.c`           | aarch64 | the idle loop, the tick, killing the current thread |
+| `kernel/arch/aarch64/sys/fork.c`            | aarch64 | the child's thread                           |
+| `kernel/arch/aarch64/sys/execve.c`          | aarch64 | where a new program starts                   |
+| `kernel/arch/aarch64/cpu/switch.S`          | aarch64 | `aarch64_ctx_save`, `aarch64_ctx_load`, `aarch64_jump_user` |
+| `kernel/arch/aarch64/cpu/fpsimd.c`          | aarch64 | the lazy FP/SIMD registers                   |
 
 ## References
 

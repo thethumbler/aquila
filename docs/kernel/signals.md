@@ -17,7 +17,7 @@ AquilaOS does it. Which signals exist, when they're pending, and what
 happens to system calls they interrupt is the kernel's design; running a
 handler means building a frame on the user stack out of the CPU's
 registers, which is the architecture's, described at the end for x86
-(see [The kernel and the machine](architecture.md)).
+and aarch64 (see [The kernel and the machine](architecture.md)).
 
 ## The kernel's side
 
@@ -76,9 +76,10 @@ Every way of sending a signal ends in `signal_to()`:
 1. does the parts of job control that can't wait: a stop signal discards
    a pending `SIGCONT`, and `SIGCONT` or `SIGKILL` discards pending stops
    and continues a stopped process at once (whatever `SIGCONT`'s action
-   is), telling its parent;
-2. discards the signal if it would be ignored when delivered: its action
-   is `SIG_IGN`, or it's `SIG_DFL` and the default is to ignore;
+   is); for `SIGCONT`, it tells the parent;
+2. discards the signal if delivering it would do nothing: its action is
+   `SIG_IGN`, or it's `SIG_DFL` and the default is to ignore, or to
+   continue (`SIGCONT`'s, done already);
 3. otherwise sets its bit in the pending set;
 4. if the process doesn't block it, wakes its threads that sleep in an
    *interruptible* sleep (`ISLEEP`), and makes those running on another
@@ -266,21 +267,58 @@ The sigcode page is a `vm_object` of its own with a pager that makes the
 page the first time any process touches it (`sigcode_in()`): every
 process maps the same object.
 
+## aarch64: the return to user mode and the frame
+
+aarch64 does the same in [`sys/signal.c`](../../kernel/arch/aarch64/sys/signal.c).
+Every return to user mode goes through `aarch64_return_to_user()`, a
+no-op unless the saved context is EL0's. Restarting a call is going back
+four bytes, to the `svc`, with its first argument back in `x0` from
+`orig_x0` (the number is still in `x8`); `EINTR` is writing `-EINTR`
+into `x0`.
+
+The frame, on the user stack below where the thread was (AAPCS64 has no
+red zone), 16-byte aligned:
+
+```c
+struct sigframe {
+    struct aquila_siginfo info;
+    sigset_t mask;
+    uint64_t fpsimd_valid;      /* fpsimd below is the thread's state */
+    struct aarch64_regs regs;   /* the interrupted context */
+    uint8_t fpsimd[FPSIMD_STATE_SIZE] __aligned(16);
+};
+```
+
+The handler gets its arguments in `x0`, `x1`, `x2` (signal, `&info`,
+`NULL`), and its return address in `x30`, the sigcode page's. Unlike
+x86's, it starts with the FP/SIMD registers as they were, not cleared.
+The sigcode page holds `mov x8, #SYS_sigreturn`, `svc #0` and `udf #0`;
+`sigcode_in()` also makes the instruction cache see it.
+
+`arch_sigreturn()` reads the frame at the stack pointer, puts the
+registers back with only the flags user code may set (`USER_FLAGS`:
+`N`, `Z`, `C`, `V`; the mode is EL0's and the interrupts unmasked), and
+the FP/SIMD state back (`aarch64_fpsimd_restore()`).
+
 ## Where it is
 
-| File                                     | Layer  | What                                         |
-|------------------------------------------|--------|----------------------------------------------|
-| `include/uapi/aquila/signal.h`           | kernel | the numbers, `siginfo`, `sigaction` and its flags (shared with the C library) |
-| `kernel/include/sys/signal.h`            | kernel | the interface, `ERESTARTSYS`, `ERESTARTNOHAND` |
-| `kernel/sys/signal.c`                    | kernel | default actions, sending, taking, stopping   |
-| `kernel/sys/sys_signal.c`                | kernel | `kill`, `sigaction`, `sigprocmask`, `sigsuspend`, `sigreturn` |
-| `kernel/sys/sys_poll.c`                  | kernel | `select`'s mask                              |
-| `kernel/sys/proc.c`                      | kernel | `SIGCHLD`, orphaned groups                   |
-| `kernel/dev/tty/generic.c`               | kernel | the terminal's signals                       |
-| `kernel/arch/i386/sys/signal.c`          | x86    | `x86_return_to_user()`, restarts, the frame, sigcode, `sigreturn` |
-| `kernel/arch/i386/sys/syscall.c`         | x86    | the return path after a system call          |
-| `kernel/arch/i386/cpu/isr.c`             | x86    | exceptions to signals                        |
-| `kernel/arch/i386/cpu/fpu.c`             | x86    | the FPU state in and out of frames           |
+| File                                | Layer   | What                                         |
+|-------------------------------------|---------|----------------------------------------------|
+| `include/uapi/aquila/signal.h`      | kernel  | the numbers, `siginfo`, `sigaction` and its flags (shared with the C library) |
+| `kernel/include/sys/signal.h`       | kernel  | the interface, `ERESTARTSYS`, `ERESTARTNOHAND` |
+| `kernel/sys/signal.c`               | kernel  | default actions, sending, taking, stopping   |
+| `kernel/sys/sys_signal.c`           | kernel  | `kill`, `sigaction`, `sigprocmask`, `sigsuspend`, `sigreturn` |
+| `kernel/sys/sys_poll.c`             | kernel  | `select`'s mask                              |
+| `kernel/sys/proc.c`                 | kernel  | `SIGCHLD`, orphaned groups                   |
+| `kernel/dev/tty/generic.c`          | kernel  | the terminal's signals                       |
+| `kernel/arch/i386/sys/signal.c`     | x86     | `x86_return_to_user()`, restarts, the frame, sigcode, `sigreturn` |
+| `kernel/arch/i386/sys/syscall.c`    | x86     | the return path after a system call          |
+| `kernel/arch/i386/cpu/isr.c`        | x86     | exceptions to signals                        |
+| `kernel/arch/i386/cpu/fpu.c`        | x86     | the FPU state in and out of frames           |
+| `kernel/arch/aarch64/sys/signal.c`  | aarch64 | `aarch64_return_to_user()`, restarts, the frame, sigcode, `sigreturn` |
+| `kernel/arch/aarch64/sys/syscall.c` | aarch64 | the return path after a system call          |
+| `kernel/arch/aarch64/cpu/trap.c`    | aarch64 | exceptions to signals                        |
+| `kernel/arch/aarch64/cpu/fpsimd.c`  | aarch64 | the FP/SIMD state in and out of frames       |
 
 ## References
 
@@ -297,3 +335,5 @@ process maps the same object.
 - System V Application Binary Interface, *Intel386 Architecture Processor
   Supplement* and *AMD64 Architecture Processor Supplement*: the stack's
   alignment at a function's entry, and the red zone.
+- *Procedure Call Standard for the Arm 64-bit Architecture* (AAPCS64):
+  the arguments' registers, the link register, the stack's alignment.
