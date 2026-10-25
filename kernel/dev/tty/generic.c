@@ -227,16 +227,19 @@ uint64_t tty_read_timeout(struct tty *tty)
 }
 
 /**
- * Says whether a read wouldn't have to wait, given what is buffered.
+ * Says whether the terminal is readable, for `select()` and `poll()`:
+ * there is input, or an end-of-file. With `VMIN` and `VTIME` 0 a read
+ * doesn't wait either, but it isn't readable without input, as on Linux
+ * and the BSDs: a program that waits for input in `select()` would
+ * otherwise never sleep.
  *
  * @param tty       the terminal
  * @param buffered  how many bytes the device holds for readers
- * @return whether a read can go on at once
+ * @return whether there is something to read
  */
 int tty_can_read(struct tty *tty, size_t buffered)
 {
-    return buffered || tty->eof ||
-           (!(tty->tios.c_lflag & ICANON) && !tty->tios.c_cc[VMIN] && !tty->tios.c_cc[VTIME]);
+    return buffered || tty->eof;
 }
 
 /**
