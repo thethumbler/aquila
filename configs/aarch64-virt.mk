@@ -1,5 +1,6 @@
-# AquilaOS on QEMU's virt machine (aarch64): built with clang and ld.lld,
-# no cross toolchain of its own (the kernel needs no C library)
+# AquilaOS on QEMU's virt machine (aarch64): the kernel is built with
+# clang and ld.lld, not the cross toolchain (it needs no C library); the
+# system's programs with the aarch64-aquila toolchain (make toolchain)
 #
 #   make kernel CONFIG=aarch64-virt
 #
@@ -37,7 +38,7 @@ KVM := 0
 
 ARCH=aarch64
 ARCH_DIR=aarch64
-# the system's compilers (none yet)
+# the system's compilers
 TARGET=aarch64-aquila
 ARCH_AARCH64=y
 ARCH_BITS=64

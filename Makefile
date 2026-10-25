@@ -1,45 +1,50 @@
 #
 # AquilaOS top level Makefile
 #
-# Everything is built into $(BUILDDIR) (default: build/).
+# Everything is built into $(BUILDDIR): build/<arch>/ (build/x86_64,
+# build/aarch64), build/ itself for i386. The paths below that don't start
+# with build/ are in it.
 #
-#   make toolchain    the cross toolchain and C library (i686-aquila, or
-#                     x86_64-aquila: build/toolchain, build/sysroot or
-#                     build/sysroot-x86_64), needed by the rest
+#   make toolchain    the cross toolchain and C library (x86_64-aquila,
+#                     i686-aquila or aarch64-aquila: build/toolchain, and
+#                     build/sysroot-<arch> or build/sysroot for i386),
+#                     needed by the rest
 #   make              kernel, user space programs, base third-party
 #                     software (contrib/) and initrd image
-#   make kernel       build/kernel/kernel-$(VERSION).$(ARCH)
-#   make userland     build/userland/bin/
+#   make kernel       kernel/kernel-$(VERSION).$(ARCH)
+#   make userland     userland/bin/
 #   make contrib      third-party software of the base system in contrib/
-#                     (build/contrib/root): dash, sbase
+#                     (contrib/root): dash, sbase, runit, netcat, sdhcp
 #   make ports        optional third-party software in ports/
-#                     (build/ports/root), included in the initrd once built
+#                     (ports/root), the out-of-date ones, included in the
+#                     initrd once built
 #
 #   CONTRIB_ROOT=<dir> and PORTS_ROOT=<dir> take those from elsewhere.
-#   make initrd       build/rootfs/ and build/initrd.img, ROOTFS_OVERLAY=<dir>
-#                     is copied over rootfs/ (e.g. etc/passwd and etc/shadow)
-#   make iso          build/aquila.iso, boots with Limine (needs xorriso)
-#   make live         build/live.img (i386 only): a tiny disk (LIVE_SIZE=<KiB>,
+#   make initrd       rootfs/ and initrd.img, ROOTFS_OVERLAY=<dir>
+#                     is copied over the tree (e.g. etc/passwd and etc/shadow)
+#   make iso          aquila.iso, boots with Limine (x86 only; needs xorriso)
+#   make live         live.img (i386 only): a tiny disk (LIVE_SIZE=<KiB>,
 #                     default 2048) with the base system (no ports), for v86
 #                     in a browser; its root filesystem is the initrd, in
 #                     memory (needs mtools and sfdisk)
-#   make hdd          build/aquila.img, a hard disk with AquilaOS installed:
+#   make hdd          aquila.img (x86 only), a hard disk with AquilaOS installed:
 #                     Limine on a FAT32 /boot, the root filesystem on ext2
 #                     (HDD_SIZE=<MiB>, default 512; needs sfdisk, mkfs.fat,
 #                     mtools, mke2fs and fakeroot). Replaces an existing one.
 #   make run-min      the quick start, no toolchain: the kernel built with
 #                     the host's gcc and start/init.c, a tiny shell, as the
 #                     only program (needs gcc, ld, cpio and QEMU)
-#   make min          build it only (build/min-$(ARCH)/)
+#   make min          build it only (build/min-$(ARCH)/; aarch64's kernel
+#                     is built with clang)
 #   make debug        the same with debugging information (DEBUG=1), QEMU
 #                     waiting for gdb: gdb -x mk/gdbinit <the kernel it says>
 #                     (mk/backtrace.sh names a panic's addresses)
 #   make run          boot the kernel and initrd in QEMU, console on stdio
 #   make run-iso      boot the ISO in QEMU (framebuffer console)
 #   make hdd-kernel   put the kernel (and Limine's configuration) on
-#                     build/aquila.img, its root filesystem is kept as it is
-#   make hdd-update   the kernel and the system just built (build/rootfs)
-#                     on build/aquila.img: what the build has replaces the
+#                     aquila.img, its root filesystem is kept as it is
+#   make hdd-update   the kernel and the system just built (rootfs/)
+#                     on aquila.img: what the build has replaces the
 #                     disk's, the rest is kept (/root, /home, and the
 #                     accounts in /etc if the disk has them)
 #   make run-hdd      boot the hard disk in QEMU with the system just built
@@ -54,12 +59,12 @@
 #                     (DOCS_PORT=<port>; needs python3)
 #   make clean        remove build output except the toolchain, downloads
 #                     and the hard disk (it has what was saved on it)
-#   make distclean    remove build/
+#   make distclean    remove $(BUILDDIR) (for i386, all of build/)
 #
 # CONFIG selects the kernel configuration in configs/ (default: x86_64-pc),
 # and the architecture of everything: x86-64 is built into build/x86_64,
-# CONFIG=i386-pc builds i386 into build/ (the toolchains are both in
-# build/toolchain).
+# CONFIG=aarch64-virt builds aarch64 into build/aarch64, CONFIG=i386-pc
+# builds i386 into build/ (the toolchains are all in build/toolchain).
 #
 
 SRCDIR   := $(CURDIR)

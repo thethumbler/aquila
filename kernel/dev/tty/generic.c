@@ -492,8 +492,8 @@ int tty_ioctl(struct tty *tty, int request, void *argp)
             break;
         case TCSBRK:
         case TCXONC:
-            /* no output waits to be sent, and there's no flow control to
-             * apply */
+            /* no output waits to be sent; flow control is only the
+             * typed VSTOP and VSTART (IXON), not TCXONC */
             break;
         case TIOCGSID:
             if (!tty->session)

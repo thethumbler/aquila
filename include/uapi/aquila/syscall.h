@@ -9,6 +9,12 @@
  *
  * i386: number in %eax, arguments in %ebx, %ecx, %edx, %esi, %edi,
  * `int $0x80', result (or negated errno) in %eax.
+ *
+ * x86_64: number in %rax, arguments in %rdi, %rsi, %rdx, %r10, %r8,
+ * `int $0x80', result (or negated errno) in %rax.
+ *
+ * aarch64: number in x8, arguments in x0 to x4, `svc #0', result (or
+ * negated errno) in x0.
  */
 
 #define SYS_exit            1

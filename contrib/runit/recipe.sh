@@ -11,9 +11,10 @@ build()
 {
     cd src
 
-    # the i686-aquila toolchain, and what the build finds out by running
-    # programs on the build host given instead: poll() for iopause, a
-    # 32-bit unsigned long, the system type; no utmp and no IP sockets
+    # the system's toolchain ($CC), and what the build finds out by
+    # running programs on the build host given instead: poll() for
+    # iopause, uint64 as unsigned long long (right whether unsigned long
+    # has 32 or 64 bits), the system type; no utmp and no IP sockets
     # (only utmpset and svlogd use them)
     echo "$CC -Os -Wall" > conf-cc
     echo "$CC -s" > conf-ld

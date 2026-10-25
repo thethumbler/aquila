@@ -99,8 +99,8 @@ void arch_idle(void)
 static void __arch_cur_thread_kill(void)
 {
     /* A thread that called thread_exit() is a zombie already: it stays
-     * on its process's list of threads (for thread_join()), and is freed
-     * when the process exits. Otherwise the process is exiting, and
+     * on its process's list of threads, and is freed by thread_join(),
+     * or when the process exits. Otherwise the process is exiting, and
      * proc_kill() took the thread off the list already. */
     int keep = curthread->state == ZOMBIE;
 

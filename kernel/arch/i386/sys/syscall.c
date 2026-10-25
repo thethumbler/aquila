@@ -43,8 +43,9 @@ void arch_syscall(struct x86_regs *r)
 
 /*
  * Sets the result of a thread's system call: eax (rax) when it returns to
- * user mode. That's in its saved registers, or, for a thread that has
- * never run (a child of `fork()`), where it will start from.
+ * user mode. That's in its saved registers (for a child of `fork()`, its
+ * copy of its parent's), or, for a thread that has never run, where it
+ * will start from.
  */
 void arch_syscall_return(struct thread *thread, uintptr_t val)
 {

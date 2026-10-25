@@ -172,7 +172,7 @@ int x86_pic_setup(struct ioaddr *_master, struct ioaddr *_slave)
         return -ENODEV;
     }
 
-    printk("i8259: initializing [Master: %p (%s), Salve: %p (%s)]\n",
+    printk("i8259: initializing [Master: %p (%s), Slave: %p (%s)]\n",
             master.addr, ioaddr_type_str(&master),
             slave.addr, ioaddr_type_str(&slave));
 
