@@ -2,11 +2,13 @@
 #
 # Build the kernel with the host toolchain and run the QEMU test suite.
 #
-# usage: tests/run.sh [-a arch] [-c cpus] [-j jobs] [-k args] [-n] [-v] [test...]
+# usage: tests/run.sh [-a arch] [-C cc] [-c cpus] [-j jobs] [-k args] [-n] [-v] [test...]
 #
 #   -a      the architecture: x86_64 (default), i386, or aarch64 (QEMU's
 #           virt machine, the kernel and tests built with clang; the
 #           aarch64 and oom tests)
+#   -C      the kernel's compiler on x86: gcc (default) or tcc (TCC=<tcc>,
+#           tests/host/<arch>-pc-tcc.mk), its build in tests/out/<arch>-tcc
 #   -c      the CPUs QEMU has (-smp), every boot (but the irq and smp
 #           tests', which choose)
 #   -j      tests run at once (default 1); the ones that time things or
@@ -29,7 +31,7 @@
 # (mke2fs, e2fsck, debugfs) and python3. The libc, system and disk tests
 # need the cross toolchain (make toolchain, x86_64-aquila or i686-aquila)
 # and are skipped without it, the disk test also sfdisk, mkfs.fat, mtools and
-# fakeroot (mk/hdd.sh).
+# fakeroot (mk/hdd.sh). -C tcc needs tcc (i386: its i386 compiler, i386-tcc).
 #
 
 set -u
@@ -51,20 +53,23 @@ verbose=0
 kargs=
 smp=
 jobs=1
+# the kernel's compiler (x86): gcc, or tcc
+KCC=gcc
 
 # tests that measure time (a tick's rate, the clock against the host's,
 # threads running at once) or use much memory: never beside others
 SERIAL_TESTS="clock irq smp memory"
 
-while getopts "a:c:j:k:nvh" opt; do
+while getopts "a:C:c:j:k:nvh" opt; do
     case $opt in
         a) ARCH=$OPTARG ;;
+        C) KCC=$OPTARG ;;
         c) smp=$OPTARG ;;
         j) jobs=$OPTARG ;;
         k) kargs=$OPTARG ;;
         n) build=0 ;;
         v) verbose=1 ;;
-        *) sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+        *) sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
     esac
 done
 shift $((OPTIND - 1))
@@ -106,6 +111,24 @@ esac
 case $ARCH in
     aarch64) CONFIG=aarch64-virt ;;
     *)       CONFIG=../tests/host/$ARCH-pc ;;
+esac
+
+# the kernel built with tcc: its own configuration and build directory
+case $KCC in
+    gcc) ;;
+    tcc)
+        if [ "$ARCH" = aarch64 ]; then
+            echo "error: -C tcc is x86's only" >&2
+            exit 2
+        fi
+        CONFIG=$CONFIG-tcc
+        OUT=$TESTS/out/$ARCH-tcc
+        # the configuration's default: tcc, or its i386 compiler
+        [ "$ARCH" = i386 ] && tcc=${TCC:-i386-tcc} || tcc=${TCC:-tcc}
+        TOOLS="$TOOLS ${tcc%% *}" ;;
+    *)
+        echo "error: unknown compiler: $KCC" >&2
+        exit 2 ;;
 esac
 
 # the main build (make, make CONFIG=x86_64-pc), contrib/ and ports/ come

@@ -10,6 +10,7 @@ tests/run.sh -n         # reuse the kernel image from the last build
 tests/run.sh -v         # print the serial log of failed tests
 tests/run.sh -a i386    # the i386 kernel and system (default: x86_64)
 tests/run.sh -a aarch64 # the aarch64 kernel on QEMU's virt machine: the aarch64 and oom tests
+tests/run.sh -C tcc     # the kernel built with tcc (x86; i386's with i386-tcc)
 tests/run.sh -k apic=off    # more for the kernel's command line, every boot
 tests/run.sh -c 4       # QEMU with 4 CPUs, every boot (but the irq and smp tests)
 tests/run.sh -j 4       # 4 tests at once (clock, irq, smp and memory alone, after)

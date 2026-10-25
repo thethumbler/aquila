@@ -40,7 +40,8 @@ SECTIONS {
     }
     
     .data : AT(ADDR(.data) - _VMA) ALIGN(0x1000) {
-        *(.data)
+        *(.data*)
+        *(.got*)
     }
     
     .bss : AT(ADDR(.bss) - _VMA) ALIGN(0x1000) {

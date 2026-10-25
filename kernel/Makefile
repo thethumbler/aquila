@@ -70,7 +70,7 @@ all: $(KERNEL) $(if $(filter y,$(KERNEL_BINARY)),$(KERNEL).img)
 
 $(KERNEL): $(OBJS) $(LDSCRIPT)
 	@$(ECHO) "  LD      " $(patsubst $(BUILDDIR)/%,%,$@)
-	@$(LD) $(LDFLAGS) -T $(LDSCRIPT) $(OBJS) -o $@
+	@$(LD) $(LDFLAGS) -T $(LDSCRIPT) $(OBJS) $(LDLIBS) -o $@
 
 # the kernel's memory image, flat, for boot loaders that take one
 # (KERNEL_BINARY: aarch64's, Linux's arm64 Image)
@@ -87,7 +87,7 @@ $(KBUILD)/%.o: $(KSRC)/%.c
 $(KBUILD)/%.o: $(KSRC)/%.S
 	@$(MKDIR) $(@D)
 	@$(ECHO) "  AS      " kernel/$*.o
-	@$(CC) $(KASFLAGS) -I$(<D) -c $< -o $@
+	@$(AS) $(KASFLAGS) -I$(<D) -c $< -o $@
 
 install: $(KERNEL)
 	@$(ECHO) "  INSTALL " $(DESTDIR)/boot/kernel

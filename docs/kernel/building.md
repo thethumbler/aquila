@@ -152,6 +152,19 @@ stack protector, CET). The tests use them, and so does `make run-min`
 (below). aarch64's configuration builds the kernel with clang already,
 which needs no toolchain of its own either.
 
+On x86 the kernel also builds with tcc, the Tiny C Compiler:
+`tests/host/x86_64-pc-tcc.mk` and `tests/host/i386-pc-tcc.mk` compile
+the C with it (`TCC=`, by default `tcc`, and for i386 `i386-tcc`, its
+i386 compiler), and assemble and link with the host's gcc and `ld`:
+tcc's assembler doesn't take all of the kernel's assembly, and its
+linker doesn't take linker scripts. The kernel is linked with tcc's
+runtime library (`libtcc1.a`, as gcc's would be `libgcc`), which has
+what tcc calls instead of generating it: atomic operations, 64-bit
+shifts on i386, `va_arg` on x86_64. Being built by two compilers keeps
+the kernel's C plain; what it still needs from one of them is in
+`core/system.h`, and what a compiler may call by itself (`memcpy()`, a
+`va_arg` that fails) in `core/string.c` and `core/compiler.c`.
+
 `DEBUG=1` adds debugging information (`-g`) and lowers the optimization
 to `-Og`, which keeps the code close to the source for gdb. The linker
 scripts keep the DWARF sections in the file, not loaded. Flags alone
@@ -347,12 +360,13 @@ how to write one.
 ### Options
 
 ```
-tests/run.sh [-a arch] [-c cpus] [-j jobs] [-k args] [-n] [-v] [test...]
+tests/run.sh [-a arch] [-C cc] [-c cpus] [-j jobs] [-k args] [-n] [-v] [test...]
 ```
 
 | Option | What                                                                         |
 |--------|------------------------------------------------------------------------------|
 | `-a`   | the architecture: `x86_64` (default), `i386`, or `aarch64` (QEMU's virt machine, built with clang: the `aarch64` and `oom` tests) |
+| `-C`   | the kernel's compiler, on x86: `gcc` (default) or `tcc` (above), built into `tests/out/<arch>-tcc/` |
 | `-c`   | the number of CPUs QEMU has, for every boot (but the `irq` and `smp` tests, which choose) |
 | `-j`   | the tests run at once (default 1); those that time things or take much memory (`clock`, `irq`, `smp`, `memory`) run alone, after |
 | `-k`   | more for the kernel's command line, for every boot (e.g. `apic=off`)          |
@@ -370,6 +384,8 @@ tests/run.sh -k apic=off        # the 8259 and the PIT, one CPU
 tests/run.sh -n -c 4            # four CPUs, every test
 tests/run.sh -n -a i386 -c 4    # the same on i386
 tests/run.sh -a aarch64         # aarch64
+tests/run.sh -C tcc             # x86_64, the kernel built with tcc
+tests/run.sh -a i386 -C tcc     # the same on i386
 ```
 
 `-j 4` (to any of them) runs 4 tests at once.
@@ -437,7 +453,7 @@ The kernel's compiler flags are in its configuration:
 | `start/init.c`                     | common   | `make run-min`'s program               |
 | `mk/gdbinit`, `mk/backtrace.sh`    | common   | debugging                               |
 | `tests/run.sh`, `tests/*/`, `tests/lib/aqtest.h` | common | the tests                      |
-| `tests/host/`                      | x86/PC   | the configurations for the host's gcc  |
+| `tests/host/`                      | x86/PC   | the configurations for the host's gcc, and for tcc |
 | `docs/kernel/`                     | common   | these documents, `Doxyfile`             |
 | `.github/workflows/build.yml`      | common   | CI                                      |
 | `.github/workflows/docs.yml`       | common   | the documentation on GitHub Pages       |

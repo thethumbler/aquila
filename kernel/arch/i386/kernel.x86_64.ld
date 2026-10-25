@@ -39,6 +39,7 @@ SECTIONS {
 
     .data : AT(ADDR(.data) - _VMA) ALIGN(0x1000) {
         *(.data*)
+        *(.got*)
         . = ALIGN(0x1000);
     }
 
