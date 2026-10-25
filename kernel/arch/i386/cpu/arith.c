@@ -1,10 +1,12 @@
 /** \file
- * i386: 64-bit division, for the code GCC generates.
+ * i386: 64-bit division and shifts, for the code the compiler generates.
  *
  * A 32-bit CPU has no instruction that divides 64-bit numbers, so GCC
  * calls these helpers (`__divdi3()` and the others) for `/` and `%` on
- * 64-bit integers. User programs get them from libgcc; the kernel isn't
- * linked with it, so it has its own. They come from Pintos
+ * 64-bit integers; tcc calls them too, and others for 64-bit shifts by
+ * a variable count (`__ashldi3()`, ...). User programs get them from
+ * libgcc or tcc's libtcc1; the kernel is linked with neither of these,
+ * so it has its own. The division comes from Pintos
  * (https://www.ida.liu.se/~TDIU25/pintos/src/lib/arithmetic.c).
  */
 
@@ -139,6 +141,9 @@ long long __moddi3(long long n, long long d);
 unsigned long long __udivdi3(unsigned long long n, unsigned long long d);
 unsigned long long __umoddi3(unsigned long long n, unsigned long long d);
 unsigned long long __udivmoddi4(unsigned long long n, unsigned long long d, unsigned long long *rem);
+long long __ashldi3(long long x, int n);
+long long __ashrdi3(long long x, int n);
+unsigned long long __lshrdi3(unsigned long long x, int n);
 
 /**
  * Divides two signed 64-bit integers.
@@ -205,4 +210,81 @@ unsigned long long __udivmoddi4(unsigned long long n, unsigned long long d, unsi
         *rem = n - d * q;
 
     return q;
+}
+
+/* A 64-bit number's two halves. The shifts below work on them: a 64-bit
+ * shift would be a call to themselves. */
+union halves {
+    uint64_t v;
+    struct {
+        uint32_t lo;
+        uint32_t hi;
+    } w;
+};
+
+/**
+ * Shifts a 64-bit integer left.
+ *
+ * @param x  the value
+ * @param n  the count, 0 to 63
+ * @return `x << n`
+ */
+long long __ashldi3(long long x, int n)
+{
+    union halves h = {.v = (uint64_t) x};
+
+    if (n >= 32) {
+        h.w.hi = h.w.lo << (n - 32);
+        h.w.lo = 0;
+    } else if (n) {
+        h.w.hi = h.w.hi << n | h.w.lo >> (32 - n);
+        h.w.lo <<= n;
+    }
+
+    return (long long) h.v;
+}
+
+/**
+ * Shifts an unsigned 64-bit integer right, zeros coming in.
+ *
+ * @param x  the value
+ * @param n  the count, 0 to 63
+ * @return `x >> n`
+ */
+unsigned long long __lshrdi3(unsigned long long x, int n)
+{
+    union halves h = {.v = x};
+
+    if (n >= 32) {
+        h.w.lo = h.w.hi >> (n - 32);
+        h.w.hi = 0;
+    } else if (n) {
+        h.w.lo = h.w.lo >> n | h.w.hi << (32 - n);
+        h.w.hi >>= n;
+    }
+
+    return h.v;
+}
+
+/**
+ * Shifts a signed 64-bit integer right, copies of its sign coming in.
+ *
+ * @param x  the value
+ * @param n  the count, 0 to 63
+ * @return `x >> n`
+ */
+long long __ashrdi3(long long x, int n)
+{
+    union halves h = {.v = (uint64_t) x};
+    int32_t hi = (int32_t) h.w.hi;
+
+    if (n >= 32) {
+        h.w.lo = (uint32_t) (hi >> (n - 32));
+        h.w.hi = (uint32_t) (hi >> 31);
+    } else if (n) {
+        h.w.lo = h.w.lo >> n | h.w.hi << (32 - n);
+        h.w.hi = (uint32_t) (hi >> n);
+    }
+
+    return (long long) h.v;
 }

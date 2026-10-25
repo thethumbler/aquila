@@ -11,7 +11,6 @@
  */
 
 #include <core/system.h>
-#include <core/string.h>
 #include <cpu/cpu.h>
 #include <mm/mm.h>
 #include <boot/multiboot.h>
@@ -46,8 +45,10 @@ static void switch_to_higher_half(void)
     uint32_t i;
     uintptr_t entries;
 
-    /* clear the page directory */
-    memset((void *) _BSP_PD, 0, sizeof(_BSP_PD));
+    /* clear the page directory (a loop: memset() is in the higher half,
+     * which isn't mapped yet) */
+    for (i = 0; i < 1024; ++i)
+        _BSP_PD[i] = 0;
 
     /* how many page tables it takes to map the kernel and what follows */
     entries = ARCH_BOOT_MAPPED / TABLE_SIZE;

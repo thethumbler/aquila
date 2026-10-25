@@ -10,9 +10,21 @@
 #define htons(x)    ((uint16_t) (x))
 #define htonl(x)    ((uint32_t) (x))
 #else
-#define htons(x)    ((uint16_t) __builtin_bswap16((uint16_t) (x)))
-#define htonl(x)    ((uint32_t) __builtin_bswap32((uint32_t) (x)))
+#define htons(x)    bswap16((uint16_t) (x))
+#define htonl(x)    bswap32((uint32_t) (x))
 #endif
+
+/* A value with its bytes in the other order (in plain C, which every
+ * compiler takes; GCC and clang make it one instruction). */
+static inline uint16_t bswap16(uint16_t x)
+{
+    return (uint16_t) (x << 8 | x >> 8);
+}
+
+static inline uint32_t bswap32(uint32_t x)
+{
+    return x << 24 | (x & 0xFF00) << 8 | (x >> 8 & 0xFF00) | x >> 24;
+}
 
 #define ntohs(x)    htons(x)
 #define ntohl(x)    htonl(x)

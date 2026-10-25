@@ -38,6 +38,23 @@
 #include_next <stdint.h>
 #endif
 
+/* tcc has GCC's __atomic built-ins but not their memory orders, nor the
+ * forms that take and give a value (as its <stdatomic.h> defines them,
+ * which needs <stdint.h>). */
+#ifdef __TINYC__
+#define __ATOMIC_RELAXED    0
+#define __ATOMIC_CONSUME    1
+#define __ATOMIC_ACQUIRE    2
+#define __ATOMIC_RELEASE    3
+#define __ATOMIC_ACQ_REL    4
+#define __ATOMIC_SEQ_CST    5
+
+#define __atomic_load_n(ptr, order) \
+    ({ __typeof__(*(ptr)) __v; __atomic_load((ptr), &__v, (order)); __v; })
+#define __atomic_store_n(ptr, val, order) \
+    ({ __typeof__(*(ptr)) __v = (val); __atomic_store((ptr), &__v, (order)); })
+#endif
+
 #include <core/printk.h>
 #include <mm/kvmem.h>
 
