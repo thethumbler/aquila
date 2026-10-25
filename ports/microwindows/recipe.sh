@@ -7,8 +7,12 @@
 #   upstream now does on Linux only (scr_fb.c);
 # - puts the terminal in front in graphics mode (HAVETEXTMODE, KDSETMODE
 #   on /dev/tty0) so that what's written to it isn't drawn over the windows;
-# - builds the terminal emulator (nxterm, which AquilaOS's ptys can run);
-# - skips the C++ demos (there's no C++ compiler);
+# - builds the terminal emulator (nxterm, which AquilaOS's ptys can run),
+#   its window buffered: the server redraws what another window uncovers;
+# - builds nxscribble and nxchess too (as C17: they predate C23's bool and
+#   main()), and reads GIF images (Microwindows' own decoder);
+# - skips the C++ demos (there's no C++ compiler), and leaves those and the
+#   PNG one out of the launcher (nxstart);
 # - calls time() with a time_t pointer in nxroach (i386's is 64 bits).
 # Everything goes in /usr/lib/microwindows, as upstream runs it from its
 # own directory: the demos find their files as bin/...; `microwindows`
@@ -32,6 +36,13 @@ build()
 
     install -d "$dir/bin"
     cp bin/* "$dir/bin/"
+
+    # the files demos open by their paths in the source tree: nxworld's
+    # map, nxtux's image, nxchess's board and pieces
+    install -D -m 644 images/demos/nanox/nxworld.map "$dir/images/demos/nanox/nxworld.map"
+    install -D -m 644 images/demos/nanox/tux.gif "$dir/images/demos/nanox/tux.gif"
+    install -d "$dir/demos/tuxchess/images"
+    cp demos/tuxchess/images/*.gif "$dir/demos/tuxchess/images/"
 
     # strip the programs, not the images and configuration files
     for f in "$dir"/bin/*; do

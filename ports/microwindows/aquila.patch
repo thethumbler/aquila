@@ -1,7 +1,16 @@
 diff --git a/src/Configs/config.aquila b/src/Configs/config.aquila
-index d76d3dc..de30380 100644
+index d76d3dc..b498e5c 100644
 --- a/src/Configs/config.aquila
 +++ b/src/Configs/config.aquila
+@@ -90,7 +90,7 @@ HAVE_FILEIO              = Y
+ # BMP, GIF reading support
+ ####################################################################
+ HAVE_BMP_SUPPORT         = Y
+-HAVE_GIF_SUPPORT         = N
++HAVE_GIF_SUPPORT         = Y
+ HAVE_PNM_SUPPORT         = N
+ HAVE_XPM_SUPPORT         = N
+ 
 @@ -201,7 +201,7 @@ USE_EXPOSURE             = N
  VTSWITCH                 = N
  FBREVERSE                = N
@@ -11,6 +20,19 @@ index d76d3dc..de30380 100644
  
  ####################################################################
  # Screen pixel format
+diff --git a/src/demos/Makefile b/src/demos/Makefile
+index 1accbc1..03566ac 100644
+--- a/src/demos/Makefile
++++ b/src/demos/Makefile
+@@ -37,7 +37,7 @@ dirs = nanox mwin
+ endif
+ 
+ ifeq ($(ARCH), AQUILA)
+-dirs = nanox mwin nuklear
++dirs = nanox mwin nuklear nxscribble tuxchess
+ endif
+ 
+ ifeq ($(ARCH), COSMO)
 diff --git a/src/demos/nanox/Makefile b/src/demos/nanox/Makefile
 index 2c4d62d..1572b19 100644
 --- a/src/demos/nanox/Makefile
@@ -59,6 +81,85 @@ index 3361c0a..7beeed1 100644
      
      /*
         Catch some signals so we can erase any visible roaches.
+diff --git a/src/demos/nanox/nxstart.c b/src/demos/nanox/nxstart.c
+index deb010d..0eacd9f 100644
+--- a/src/demos/nanox/nxstart.c
++++ b/src/demos/nanox/nxstart.c
+@@ -75,10 +75,14 @@ struct app_info {
+ 	{"calculator",PATH "nxcalc"},
+ #else
+ 	{"aafont",    PATH "demo-aafont"},
++#if !AQUILA	/* C++, and a PNG image */
+ 	{"agg",       PATH "demo-agg"},
++#endif
+ 	{"calculator",PATH "demo-nuklear-calculator"},
+ 	{"chess",     PATH "nxchess"},
++#if !AQUILA
+ 	{"composite", PATH "demo-composite"},
++#endif
+ 	{"eyes",      PATH "nxeyes"},
+ 	{"keyboard",  PATH "nxkbd"},
+ 	{"magnifier", PATH "nxmag"},
+diff --git a/src/demos/nanox/nxterm.c b/src/demos/nanox/nxterm.c
+index 70ef4c7..ddeea0b 100755
+--- a/src/demos/nanox/nxterm.c
++++ b/src/demos/nanox/nxterm.c
+@@ -1152,7 +1152,6 @@ term(void)
+     long    in, l;
+     GR_EVENT_KEYSTROKE *kp;
+     int     bufflen;
+-    int     gotexpose = 0;
+     GR_EVENT wevent;
+     unsigned char buf[KBDBUF];
+ 
+@@ -1161,10 +1160,17 @@ term(void)
+         write(termfd, startprogram, strlen(startprogram));
+         write(termfd, "\r", 1);
+     }
++    /* drawing goes to the window's buffer even before it's mapped (and a
++     * buffered window gets no exposure events): read at once */
++    GrRegisterInput(termfd);
++
+     while (42) {
+         if (havefocus)
+             draw_cursor();
+ 
++        /* show what was drawn in the buffer */
++        GrFlushWindow(w1);
++
+         GrGetNextEvent(&wevent);
+ 
+         switch (wevent.type) {
+@@ -1207,16 +1213,7 @@ term(void)
+                 hide_cursor();
+             break;
+ 
+-        case GR_EVENT_TYPE_EXPOSURE:
+-            if (!gotexpose) {
+-                GrRegisterInput(termfd);
+-                gotexpose = GR_TRUE;
+-            }
+-            break;
+-
+         case GR_EVENT_TYPE_FDINPUT:
+-            if (!gotexpose)
+-                break;          /* wait until mapped before reading */
+             hide_cursor();
+             if ((in = read(termfd, buf, sizeof(buf))) > 0) {
+                 for (l = 0; l < in; l++) {
+@@ -1704,8 +1701,10 @@ main(int argc, char **argv)
+     GrGetFontInfo(regFont, &fi);
+     winw = col * fi.maxwidth;
+     winh = row * fi.height;
+-    w1 = GrNewWindowEx(GR_WM_PROPS_APPWINDOW, TITLE, GR_ROOT_WINDOW_ID, -1, -1,
+-                       winw, winh, stdbackground);
++    /* buffered: the server keeps the window's contents and redraws what
++     * another window uncovers, as the text isn't kept here */
++    w1 = GrNewWindowEx(GR_WM_PROPS_APPWINDOW | GR_WM_PROPS_BUFFERED, TITLE,
++                       GR_ROOT_WINDOW_ID, -1, -1, winw, winh, stdbackground);
+ 
+     GrSelectEvents(w1, GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_EXPOSURE |
+                    GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_FOCUS_IN |
 diff --git a/src/demos/nanox/nxterm.h b/src/demos/nanox/nxterm.h
 index cf92525..a7aaef2 100644
 --- a/src/demos/nanox/nxterm.h
@@ -72,6 +173,30 @@ index cf92525..a7aaef2 100644
  static char termtype_string[] = "TERM=ngterm";
  static char termcap_string[1024] =
  "TERMCAP=ngterm|nano-X vt52 terminal:\
+diff --git a/src/demos/nxscribble/Makefile b/src/demos/nxscribble/Makefile
+index 806a4b5..99f733e 100644
+--- a/src/demos/nxscribble/Makefile
++++ b/src/demos/nxscribble/Makefile
+@@ -18,6 +18,7 @@ INCLUDEDIRS +=
+ DEFINES +=
+ 
+ EXTRAFLAGS += -Wno-missing-prototypes				# turn off missing prototype warnings in nxscribble compile
++EXTRAFLAGS += -std=gnu17						# its own bool, a keyword in C23
+ # Compilation flags for C files OTHER than include directories
+ CFLAGS +=
+ # Linking flags
+diff --git a/src/demos/tuxchess/Makefile b/src/demos/tuxchess/Makefile
+index 86bcd78..5105e3a 100644
+--- a/src/demos/tuxchess/Makefile
++++ b/src/demos/tuxchess/Makefile
+@@ -20,6 +20,7 @@ DEFINES +=
+ 
+ # Compilation flags for C files OTHER than include directories
+ EXTRAFLAGS += -Wno-missing-prototypes				# turn off missing prototype warnings in nxscribble compile
++EXTRAFLAGS += -std=gnu17						# main() declared without arguments, C23 says none
+ # Linking flags
+ LDFLAGS +=
+ 
 diff --git a/src/drivers/scr_fb.c b/src/drivers/scr_fb.c
 index 898120d..10763ef 100644
 --- a/src/drivers/scr_fb.c
