@@ -198,6 +198,14 @@ SYSCALL0(setsid)
 SYSCALL2(nanosleep, const struct aquila_timespec *, struct aquila_timespec *)
 SYSCALL2(clock_gettime, int, struct aquila_timespec *)
 SYSCALL2(sethostname, const char *, size_t)
+SYSCALL3(mprotect, void *, size_t, int)
+SYSCALL4(pread, int, void *, size_t, off_t)
+SYSCALL4(pwrite, int, void *, size_t, off_t)
+SYSCALL4(socketpair, int, int, int, int *)
+SYSCALL2(pipe2, int *, int)
+SYSCALL3(dup3, int, int, int)
+SYSCALL0(sched_yield)
+SYSCALL4(clock_nanosleep, int, int, const struct aquila_timespec *, struct aquila_timespec *)
 
 const syscall_t syscall_table[] = {
     [SYS_exit]          = sys_exit_entry,
@@ -298,6 +306,14 @@ const syscall_t syscall_table[] = {
     [SYS_sigtimedwait]  = sys_sigtimedwait_entry,
     [SYS_sigpending]    = sys_sigpending_entry,
     [SYS_sigaltstack]   = sys_sigaltstack_entry,
+    [SYS_mprotect]      = sys_mprotect_entry,
+    [SYS_pread]         = sys_pread_entry,
+    [SYS_pwrite]        = sys_pwrite_entry,
+    [SYS_socketpair]    = sys_socketpair_entry,
+    [SYS_pipe2]         = sys_pipe2_entry,
+    [SYS_dup3]          = sys_dup3_entry,
+    [SYS_sched_yield]   = sys_sched_yield_entry,
+    [SYS_clock_nanosleep] = sys_clock_nanosleep_entry,
 };
 
 const size_t syscall_cnt = sizeof(syscall_table)/sizeof(syscall_table[0]);

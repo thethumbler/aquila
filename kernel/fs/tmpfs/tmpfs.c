@@ -65,6 +65,11 @@ static ssize_t tmpfs_write(struct vnode *node, off_t offset, struct iobuf *io)
     if (offset < 0)
         return -EINVAL;
 
+    /* the end would be past what a size can hold (on 32 bits, an offset
+     * near 2 GiB and a few GiB of data) */
+    if ((size_t) offset + size < (size_t) offset)
+        return -EFBIG;
+
     if (((size_t) offset + size) > node->size) {    /* a bigger buffer */
         size_t sz = (size_t) offset + size;
 

@@ -41,6 +41,82 @@ long sys_socket(int domain, int type, int protocol)
     return fd;
 }
 
+/**
+ * Implements `socketpair()`: makes two sockets connected to each other,
+ * open on two new descriptors. Only `AF_UNIX` stream sockets can be made
+ * so.
+ *
+ * @param domain    `AF_UNIX`
+ * @param type      `SOCK_STREAM`, with `SOCK_NONBLOCK` for non-blocking
+ *                  sockets and `SOCK_CLOEXEC` for descriptors that
+ *                  `exec()` closes
+ * @param protocol  0
+ * @param fd        where to put the two descriptors
+ * @return 0, or a negative errno: `-EAFNOSUPPORT`, `-EOPNOTSUPP` for
+ *         another domain that has sockets, `-EPROTONOSUPPORT`,
+ *         `-EMFILE`, `-ENOMEM`, `-EFAULT`
+ */
+long sys_socketpair(int domain, int type, int protocol, int fd[2])
+{
+    syscall_log(LOG_DEBUG, "socketpair(domain=%d, type=%d, protocol=%d, fd=%p)\n",
+            domain, type, protocol, fd);
+
+    /* SOCK_NONBLOCK and SOCK_CLOEXEC are O_NONBLOCK and O_CLOEXEC */
+    int flags = type & (O_NONBLOCK | O_CLOEXEC);
+    type &= ~(O_NONBLOCK | O_CLOEXEC);
+
+    if (uaccess_check(fd, 2 * sizeof(int))) {
+        return -EFAULT;
+    }
+
+    int err = 0;
+    int fds[2] = {-1, -1};
+    struct file *a = NULL, *b = NULL;
+
+    if ((fds[0] = proc_fd_get(curproc)) == -1 || (fds[1] = proc_fd_get(curproc)) == -1) {
+        err = -EMFILE;
+        goto error;
+    }
+
+    if (!(a = file_new()) || !(b = file_new())) {
+        err = -ENOMEM;
+        goto error;
+    }
+
+    if ((err = socket_pair(a, b, domain, type, protocol)))
+        goto error;
+
+    a->flags |= flags & O_NONBLOCK;
+    b->flags |= flags & O_NONBLOCK;
+
+    int fdflags = flags & O_CLOEXEC ? FD_CLOEXEC : 0;
+
+    proc_fd_install(curproc, fds[0], a, fdflags);
+    proc_fd_install(curproc, fds[1], b, fdflags);
+
+    /* if the descriptors can't be written out, they are closed again */
+    if (copyout(fd, fds, sizeof(fds))) {
+        proc_fd_close(curproc, fds[0]);
+        proc_fd_close(curproc, fds[1]);
+        return -EFAULT;
+    }
+
+    return 0;
+
+error:
+    /* the sockets were never made: there's nothing to close */
+    kfree(a);
+    kfree(b);
+
+    if (fds[0] != -1)
+        proc_fd_release(curproc, fds[0]);
+
+    if (fds[1] != -1)
+        proc_fd_release(curproc, fds[1]);
+
+    return err;
+}
+
 /*
  * Socket addresses. The kernel works on its own copy, as big as the
  * biggest address (AF_UNIX's). An address coming in is `len` bytes of user

@@ -81,6 +81,11 @@ static void kvmem_unmap(vaddr_t base, size_t size)
  * Returns NULL if there is no memory, or no room left in the region. */
 static void *kvmem_alloc(size_t size, struct malloc_type *type)
 {
+    /* so big that rounding it up (with the guard page) would wrap around
+     * to a small size: there's never room for it */
+    if (size > (size_t) -1 - PAGE_SIZE - KVMEM_GUARD)
+        return NULL;
+
     size = PAGE_ROUND(size);
 
     struct vmem_seg *seg = vmem_alloc(&kvmem, size + KVMEM_GUARD);

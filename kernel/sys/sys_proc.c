@@ -580,8 +580,8 @@ long sys_getgid(void)
  * @param uargs  the arguments, in user memory: the address, length,
  *               protection, flags, descriptor and offset
  * @param ret    where to put the mapping's address
- * @return 0, or a negative errno: `-EBADF`, `-EINVAL`, `-ENODEV`,
- *         `-ENOMEM`, `-EFAULT`
+ * @return 0, or a negative errno: `-EBADF`, `-EINVAL` (for an offset
+ *         not on a page too), `-ENODEV`, `-ENOMEM`, `-EFAULT`
  */
 long sys_mmap(struct aquila_mmap_args *uargs, void **ret)
 {
@@ -616,6 +616,12 @@ long sys_mmap(struct aquila_mmap_args *uargs, void **ret)
     }
 
     if (!args->len) {
+        return -EINVAL;
+    }
+
+    /* a file's offset is on a page; a negative one would reach before
+     * the file, which a pager may not expect */
+    if (!anon && (args->off < 0 || (args->off & PAGE_MASK))) {
         return -EINVAL;
     }
 
@@ -683,43 +689,114 @@ error:
     return err;
 }
 
+/** Says whether a range of the current process takes in part of its
+ * heap or its stack, or, with `whole`, any of either: `sbrk()` and
+ * `exec()` manage them, and they can't be split. */
+static int heap_stack_cut(vaddr_t start, vaddr_t end, int whole)
+{
+    struct vm_entry *vm[] = {curproc->heap_vm, curproc->stack_vm};
+
+    for (size_t i = 0; i < sizeof(vm) / sizeof(vm[0]); ++i) {
+        vaddr_t sva = vm[i]->base, eva = sva + vm[i]->size;
+
+        /* not in the range */
+        if (sva == eva || eva <= start || sva >= end)
+            continue;
+
+        if (whole || sva < start || eva > end)
+            return 1;
+    }
+
+    return 0;
+}
+
 /**
- * Implements `munmap()`: removes a mapping. Only a whole mapping can be
- * removed, not a part of one; the heap and the stack can't be.
+ * Implements `munmap()`: removes the mappings of a range, whole mappings
+ * or parts of them. Parts of the range that aren't mapped are left alone.
+ * The heap and the stack can't be unmapped.
  *
- * @param addr  the mapping's address
+ * @param addr  the range's start, on a page
  * @param len   its length
- * @return 0, or `-EINVAL` if no mapping has that address and length
+ * @return 0, or a negative errno: `-EINVAL` if the range doesn't start on
+ *         a page, is empty, isn't in user space, or takes in some of the
+ *         heap or the stack; `-ENOMEM` if there was no memory to split a
+ *         mapping
  */
 long sys_munmap(void *addr, size_t len)
 {
     syscall_log(LOG_DEBUG, "munmap(addr=%p, len=%d)\n", addr, len);
 
-    struct vm_space *vm_space = &curproc->vm_space;
+    vaddr_t start = (vaddr_t) addr;
 
-    if (!len) {
+    if (!len || (start & PAGE_MASK) || uaccess_check(addr, len)) {
         return -EINVAL;
     }
 
-    queue_for (node, &vm_space->vm_entries) {
-        struct vm_entry *vm_entry = node->value;
+    vaddr_t end = start + PAGE_ROUND(len);
 
-        /* the heap and the stack are the kernel's to manage (sbrk() and
-         * exec) */
-        if (vm_entry == curproc->heap_vm || vm_entry == curproc->stack_vm)
-            continue;
-
-        if (vm_entry->base == (uintptr_t) addr && vm_entry->size == PAGE_ROUND(len)) {
-            queue_node_remove(&vm_space->vm_entries, vm_entry->qnode);
-            vm_unmap_full(vm_space, vm_entry);
-            vm_entry_destroy(vm_entry);
-            kfree(vm_entry);
-            return 0;
-        }
+    if (heap_stack_cut(start, end, 1)) {
+        return -EINVAL;
     }
 
-    /* no such mapping */
-    return -EINVAL;
+    return vm_space_remove(&curproc->vm_space, start, end);
+}
+
+/**
+ * Implements `mprotect()`: changes the permissions of a range of
+ * mappings, whole mappings or parts of them. The heap and the stack can
+ * only be changed whole: they can't be split.
+ *
+ * @param addr  the range's start, on a page
+ * @param len   its length (0 changes nothing)
+ * @param prot  `PROT_NONE`, or `PROT_READ`, `PROT_WRITE` and `PROT_EXEC`
+ * @return 0, or a negative errno: `-EINVAL` if the range doesn't start on
+ *         a page, for another flag, or for part of the heap or the stack;
+ *         `-ENOMEM` if a page of the range isn't mapped, or if there was no
+ *         memory to split a mapping
+ */
+long sys_mprotect(void *addr, size_t len, int prot)
+{
+    syscall_log(LOG_DEBUG, "mprotect(addr=%p, len=%d, prot=%x)\n", addr, len, prot);
+
+    vaddr_t start = (vaddr_t) addr;
+
+    if ((start & PAGE_MASK) || (prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC))) {
+        return -EINVAL;
+    }
+
+    if (!len) {
+        return 0;
+    }
+
+    /* past user space, nothing is the process's */
+    if (uaccess_check(addr, len)) {
+        return -ENOMEM;
+    }
+
+    vaddr_t end = start + PAGE_ROUND(len);
+
+    if (heap_stack_cut(start, end, 0)) {
+        return -EINVAL;
+    }
+
+    uint32_t perm = (prot & PROT_READ  ? VM_UR : 0) |
+                    (prot & PROT_WRITE ? VM_UW : 0) |
+                    (prot & PROT_EXEC  ? VM_UX : 0);
+
+    return vm_space_protect(&curproc->vm_space, start, end, perm);
+}
+
+/**
+ * Implements `sched_yield()`: lets the threads that are ready to run go
+ * first; the caller goes on after them.
+ *
+ * @return 0
+ */
+long sys_sched_yield(void)
+{
+    syscall_log(LOG_DEBUG, "sched_yield()\n");
+    sched_yield();
+    return 0;
 }
 
 /**

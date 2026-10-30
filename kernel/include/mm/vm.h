@@ -174,6 +174,9 @@ int  vm_space_fork(struct vm_space *parent, struct vm_space *child);
 void vm_space_destroy(struct vm_space *vm_space);
 struct vm_entry *vm_space_find(struct vm_space *vm_space, vaddr_t vaddr);
 int  vm_space_insert(struct vm_space *vm_space, struct vm_entry *vm_entry);
+int  vm_space_split(struct vm_space *vm_space, struct vm_entry *vm_entry, vaddr_t addr);
+int  vm_space_protect(struct vm_space *vm_space, vaddr_t start, vaddr_t end, uint32_t perm);
+int  vm_space_remove(struct vm_space *vm_space, vaddr_t start, vaddr_t end);
 
 /* mm/vm_entry.c: map entries */
 struct vm_entry *vm_entry_new(void);
@@ -182,6 +185,7 @@ void vm_entry_destroy(struct vm_entry *vm_entry);
 /* mm/vm_anon.c: anons */
 struct vm_anon *vm_anon_new(void);
 struct vm_anon *vm_anon_copy(struct vm_anon *vm_anon);
+struct vm_anon *vm_anon_split(struct vm_anon *vm_anon, size_t off);
 void vm_anon_incref(struct vm_anon *vm_anon);
 void vm_anon_decref(struct vm_anon *vm_anon);
 void vm_anon_destroy(struct vm_anon *vm_anon);

@@ -89,6 +89,63 @@ int socket_unix_create(struct file *file, int domain, int type, int protocol)
     return 0;
 }
 
+/**
+ * Makes two `AF_UNIX` sockets connected to each other, for
+ * `socketpair()`: a connection as `accept()` makes one, `a` its server
+ * side and `b` its client side.
+ *
+ * @param a         the open file that becomes one socket
+ * @param b         the open file that becomes the other
+ * @param type      `SOCK_STREAM` (the only one supported)
+ * @param protocol  0
+ * @return 0, `-EPROTONOSUPPORT`, or `-ENOMEM`
+ */
+int socket_unix_pair(struct file *a, struct file *b, int type, int protocol)
+{
+    if (type != SOCK_STREAM || protocol)
+        return -EPROTONOSUPPORT;
+
+    struct socket *sa = kmalloc(sizeof(struct socket), &M_SOCKET, M_ZERO);
+    struct socket *sb = kmalloc(sizeof(struct socket), &M_SOCKET, M_ZERO);
+    struct un_conn *conn = kmalloc(sizeof(struct un_conn), &M_UN_CONN, M_ZERO);
+    struct ringbuf *soci = ringbuf_new(SOCKBUF);
+    struct ringbuf *sico = ringbuf_new(SOCKBUF);
+
+    if (!sa || !sb || !conn || !soci || !sico) {
+        kfree(sa);
+        kfree(sb);
+        kfree(conn);
+        if (soci) ringbuf_free(soci);
+        if (sico) ringbuf_free(sico);
+        return -ENOMEM;
+    }
+
+    conn->soci      = soci;
+    conn->sico      = sico;
+    conn->connected = 1;
+    conn->sides     = 2;
+
+    *sa = (struct socket) {
+        .domain   = AF_UNIX_CONN,
+        .type     = type,
+        .protocol = protocol,
+        .ops      = &socket_unix_ops,
+        .p        = conn,
+    };
+    *sb = *sa;
+
+    /* offset 0 marks the server side, 1 the client side */
+    a->flags  |= FILE_SOCKET;
+    a->socket  = sa;
+    a->offset  = 0;
+
+    b->flags  |= FILE_SOCKET;
+    b->socket  = sb;
+    b->offset  = 1;
+
+    return 0;
+}
+
 /** Accepts a connection request on a listening socket, waiting for one
  * unless the socket doesn't block. `conn` becomes the server's side of the
  * connection. The peer's address isn't given: names aren't kept. */
@@ -143,6 +200,7 @@ static int socket_unix_accept(struct file *file, struct file *conn, const struct
     request->sico = sico;
 
     request->connected = 1;
+    request->sides     = 2;
 
     /* wake up the client, which waits in connect() */
     waitq_wakeup(&request->connect);
@@ -383,7 +441,7 @@ static ssize_t iobuf_to_ring(struct ringbuf **ring_p, size_t n, struct iobuf *io
 /** Sends data on a connection: as much as the ring takes, waiting for
  * room unless the socket doesn't block (with `MSG_WAITALL`, until all is
  * sent). Returns how much was sent, or a negative errno (`-EPIPE` once
- * writing is shut down). */
+ * writing is shut down, or once the peer can't read anymore). */
 static ssize_t socket_unix_send(struct file *file, struct iobuf *io, int flags,
                                 const struct sockaddr *to, socklen_t tolen)
 {
@@ -421,8 +479,11 @@ static ssize_t socket_unix_send(struct file *file, struct iobuf *io, int flags,
     for (;;) {
         struct ringbuf *ring = *ring_p;
 
-        if (!ring)  /* the connection was closed */
-            return retval;
+        /* the peer is gone, or shut for reading: what was sent, or
+         * EPIPE if nothing was (a write of 0 would be made again and
+         * again) */
+        if (!ring)
+            return retval ? retval : -EPIPE;
 
         size_t wlen = MIN(len - retval, SOCKBUF - ringbuf_available(ring));
 
@@ -665,9 +726,11 @@ static int socket_unix_shutdown(struct file *file, int how)
 
         unix_conn_shut(file, how);
 
-        /* this side is gone; the connection goes once both are (each side
-         * frees the ring it read) */
-        if (!conn->soci && !conn->sico)
+        /* this side is gone; the connection goes once both are. Both
+         * rings are gone then: each side freed the one it read. (The
+         * rings alone don't say so: a side shut for reading has freed
+         * its ring, and is still open.) */
+        if (!--conn->sides)
             kfree(conn);
 
         kfree(file->socket);

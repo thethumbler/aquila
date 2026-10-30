@@ -48,6 +48,40 @@ int socket_create(struct file *file, int domain, int type, int protocol)
 }
 
 /**
+ * Makes two sockets connected to each other in two open files, for
+ * `socketpair()`. Only Unix sockets can be made so.
+ *
+ * @param a         the open file that becomes one socket
+ * @param b         the open file that becomes the other
+ * @param domain    `AF_UNIX`
+ * @param type      `SOCK_STREAM`
+ * @param protocol  0
+ * @return 0, `-EOPNOTSUPP` for `AF_INET`, `-EAFNOSUPPORT` for another
+ *         domain, or the domain's error
+ */
+int socket_pair(struct file *a, struct file *b, int domain, int type, int protocol)
+{
+    int err;
+
+    switch (domain) {
+        case AF_UNIX:
+            err = socket_unix_pair(a, b, type, protocol);
+            break;
+        case AF_INET:
+            return -EOPNOTSUPP;
+        default:
+            return -EAFNOSUPPORT;
+    }
+
+    if (!err) {
+        a->flags |= O_RDWR;
+        b->flags |= O_RDWR;
+    }
+
+    return err;
+}
+
+/**
  * Accepts a connection on a listening socket, for `accept()`.
  *
  * @param file  the listening socket

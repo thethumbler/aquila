@@ -207,7 +207,7 @@ and only by the writer.
 This is the design of the BSDs' UVM (Chuck Cranor's), smaller: a
 `vm_anon` is UVM's *amap*, a `vm_aref` its *anon*.
 
-### mmap and sbrk
+### mmap, mprotect and sbrk
 
 - **`sbrk()`** grows or shrinks the heap region, up to the next region.
   The new pages are zero-filled at their first use.
@@ -215,16 +215,44 @@ This is the design of the BSDs' UVM (Chuck Cranor's), smaller: a
   copied when written), a device's (`MAP_SHARED` on a device: the
   framebuffer maps its memory into the process, `kdev_map()`), or
   anonymous memory. Without `MAP_FIXED` it goes in the highest gap that
-  fits, which is right below the sigcode page and the stack.
-- **`munmap()`** removes a region.
+  fits, which is right below the sigcode page and the stack. A file's
+  offset must be on a page.
+- **`mprotect()`** changes the permissions of a range
+  (`vm_space_protect()`). Every page of the range must be in a region
+  (`ENOMEM` otherwise, and nothing changes).
+- **`munmap()`** removes the regions of a range (`vm_space_remove()`),
+  and the pages that only they had. Parts of the range with nothing
+  mapped are left alone.
 
-Shortcuts: `munmap()` only removes a whole region, exactly as it was
-mapped; `MAP_FIXED` can't replace a mapping that's there; anonymous
-memory can't be `MAP_SHARED` (it would need a page shared between
-processes that `fork()` doesn't copy); a regular file can't be mapped
-`MAP_SHARED` (no filesystem implements it, so writes would never reach
-the file); there is no `mprotect()`. Regions are a list, searched from
-the start at each fault: fine for the few regions a program has here.
+A range can start or end inside a region: the region is split in two
+there first (`vm_space_split()`). The new region, the upper part, has the
+same permissions and the same file, at its offset in the file. A
+region's private pages are found by their offset in the file (or in the
+region, with no file), so each part's are told apart: those of the upper
+part move to a `vm_anon` of its own (`vm_anon_split()`). The `vm_aref`s
+move, not the pages, so pages that `fork()` shares stay shared, copy on
+write. A `vm_anon` shared with another process is copied first, as the
+first fault on it would: the other process's region doesn't change.
+
+`mprotect()` changes the permissions of the pages already mapped too, but
+never makes one writable: a write faults, and the fault makes the page
+writable, or copies it first if it's shared (`pf_present()`), as after a
+`fork()`. Without any permission (`PROT_NONE`), the pages are unmapped
+instead; they stay in the `vm_anon`, and come back when a later
+`mprotect()` allows an access. The framebuffer's memory (a region with
+`paddr`), which no fault brings in, is mapped again whole with the
+permissions as they are.
+
+Shortcuts: the heap and the stack can't be split, since `sbrk()` and
+`exec` manage them as one region each: `mprotect()` takes them only
+whole, and `munmap()` not at all (`EINVAL`, where Linux allows both). Two
+parts of a region that get the same permissions again stay two regions.
+`MAP_FIXED` can't replace a mapping that's there; anonymous memory can't
+be `MAP_SHARED` (it would need a page shared between processes that
+`fork()` doesn't copy); a regular file can't be mapped `MAP_SHARED` (no
+filesystem implements it, so writes would never reach the file). Regions
+are a list, searched from the start at each fault: fine for the few
+regions a program has here.
 
 ### The kernel's address space
 
@@ -374,12 +402,12 @@ without it has `UXN` set.
 | `kernel/mm/kvmem.c`                              | kernel  | `kmalloc()`, `kfree()`, big objects, guard pages |
 | `kernel/mm/slab.c`                               | kernel  | small objects                                |
 | `kernel/mm/vmem.c`                               | kernel  | the vmem range allocator                     |
-| `kernel/mm/vm_space.c`, `vm_entry.c`, `vmm.c`    | kernel  | address spaces and regions, `fork`           |
+| `kernel/mm/vm_space.c`, `vm_entry.c`, `vmm.c`    | kernel  | address spaces and regions, `fork`, splits   |
 | `kernel/mm/vm_anon.c`                            | kernel  | private pages                                |
 | `kernel/mm/vm_object.c`, `kernel/fs/vm_object.c` | kernel  | a file's pages                               |
 | `kernel/mm/fault.c`                              | kernel  | `mm_page_fault()`                            |
 | `kernel/sys/binfmt/`                             | kernel  | the regions of a new program                 |
-| `kernel/sys/sys_proc.c`                          | kernel  | `sbrk()`, `mmap()`, `munmap()`               |
+| `kernel/sys/sys_proc.c`                          | kernel  | `sbrk()`, `mmap()`, `munmap()`, `mprotect()` |
 | `kernel/include/mm/`                             | kernel  | the structures, and the `pmap` interface     |
 | `kernel/arch/i386/include/mm/mm.h`               | x86     | the address space layouts                    |
 | `kernel/arch/i386/mm/i386.c`                     | x86     | 32-bit paging                                |

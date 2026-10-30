@@ -133,11 +133,11 @@ made it, or fails with `EINTR`:
 | `-ERESTARTNOHAND` | `EINTR`                                         | `EINTR`                         | restarted                              |
 
 `ERESTARTNOHAND` is for the calls POSIX says fail with `EINTR` whatever
-`SA_RESTART` says: `sigsuspend()`, `select()`, `poll()`, `nanosleep()`.
-User space never sees either code. A call restarted after a stop knows it
-is a restart (`thread->restarting`): `nanosleep()`, `select()` and
-`poll()` then keep the deadline they had, rather than waiting their full
-time again.
+`SA_RESTART` says: `sigsuspend()`, `select()`, `poll()`, `nanosleep()`,
+`clock_nanosleep()`. User space never sees either code. A call restarted
+after a stop knows it is a restart (`thread->restarting`): `nanosleep()`,
+`clock_nanosleep()`, `select()` and `poll()` then keep the deadline they
+had, rather than waiting their full time again.
 
 The names, and the scheme, are Linux's.
 

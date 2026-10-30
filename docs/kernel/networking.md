@@ -58,10 +58,13 @@ connect processes on the same machine, by a path in the filesystem:
   the umask); `listen()` and `accept()` take connections to it.
 - `connect()` looks the path up, and the listener's `accept()` takes the
   connection.
+- `socketpair()` makes a connection at once, between two new sockets,
+  as `accept()` would: no path, no listener.
 - A connection is two 64 KiB rings, one each way (X servers send replies
   of hundreds of KiB); a write that fills a ring waits for the reader.
   When one side shuts down or closes, the other reads what is left, then
-  the end.
+  the end; a write to a side that can't read anymore fails with `EPIPE`.
+  The connection is freed with its last side (`sides` counts them).
 
 ## The packets
 
@@ -306,8 +309,9 @@ netbufs, which is simpler than giving netbufs to the card.
   link and a default route.
 - Fragmentation and reassembly.
 - Raw sockets (ping has its own socket type).
-- `socketpair()`, and `AF_UNIX` datagram sockets: `socket(AF_UNIX,
-  SOCK_DGRAM, 0)` fails with `EPROTONOSUPPORT`.
+- `AF_UNIX` datagram sockets: `socket(AF_UNIX, SOCK_DGRAM, 0)` fails
+  with `EPROTONOSUPPORT`, and `socketpair()` makes only stream sockets.
+- Descriptors passed over a Unix socket (`SCM_RIGHTS`).
 - TCP window scaling, timestamps and SACK.
 - DHCP and DNS in the kernel: they are user space's (`sdhcp`, the C
   library's resolver with `/etc/resolv.conf`).

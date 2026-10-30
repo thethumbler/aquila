@@ -220,6 +220,17 @@ int sched_sleep(uint64_t until)
 }
 
 /**
+ * Lets the threads that are ready run before the current one goes on, for
+ * `sched_yield()`: the current thread goes to the end of the ready list.
+ * If no other thread is ready, it just goes on.
+ */
+void sched_yield(void)
+{
+    if (!list_empty(&ready))
+        arch_yield();
+}
+
+/**
  * Finds the CPU that is running a thread, if it's another CPU than this
  * one.
  *

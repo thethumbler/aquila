@@ -194,3 +194,57 @@ struct vm_anon *vm_anon_copy(struct vm_anon *vm_anon)
 
     return new_anon;
 }
+
+/**
+ * Splits an anon in two, for a mapping split in two (`vm_space_split()`):
+ * the arefs of pages at offset `off` or past it move to a new anon, and
+ * the others stay. The arefs move, so the pages stay shared with the
+ * anons a fork shared them with, copy on write.
+ *
+ * @param vm_anon  the anon, which only one mapping may have
+ * @param off      the offset where the new anon starts
+ * @return the new anon, with one reference, or NULL if there was no
+ *         memory for it; `vm_anon` is as it was then
+ */
+struct vm_anon *vm_anon_split(struct vm_anon *vm_anon, size_t off)
+{
+    struct vm_anon *new_anon = vm_anon_new();
+
+    if (!new_anon)
+        return NULL;
+
+    new_anon->flags = vm_anon->flags & ~VM_COPY;
+    new_anon->ref   = 1;
+
+    struct hashmap *arefs = vm_anon->arefs;
+
+    /* the arefs go in the new anon first: if there's no memory for
+     * them, the old anon hasn't changed */
+    hashmap_for (qnode, arefs) {
+        struct hashmap_node *node = (struct hashmap_node *) qnode->value;
+        struct vm_aref *aref = (struct vm_aref *) node->entry;
+
+        if (aref->vm_page->off >= off && hashmap_insert(new_anon->arefs, node->hash, aref)) {
+            hashmap_free(new_anon->arefs);
+            kfree(new_anon);
+            return NULL;
+        }
+    }
+
+    /* then they come off the old one, which frees their nodes there */
+    for (size_t i = 0; i < arefs->buckets_nr; ++i) {
+        struct qnode *qnode = arefs->buckets[i].head;
+
+        while (qnode) {
+            struct qnode *next = qnode->next;
+            struct hashmap_node *node = (struct hashmap_node *) qnode->value;
+
+            if (((struct vm_aref *) node->entry)->vm_page->off >= off)
+                hashmap_node_remove(arefs, node);
+
+            qnode = next;
+        }
+    }
+
+    return new_anon;
+}

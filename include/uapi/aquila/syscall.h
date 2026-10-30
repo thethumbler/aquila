@@ -117,8 +117,16 @@
 #define SYS_sigtimedwait    98
 #define SYS_sigpending      99
 #define SYS_sigaltstack     100
+#define SYS_mprotect        101
+#define SYS_pread           102
+#define SYS_pwrite          103
+#define SYS_socketpair      104
+#define SYS_pipe2           105
+#define SYS_dup3            106
+#define SYS_sched_yield     107
+#define SYS_clock_nanosleep 108
 
-#define SYS_MAX             100
+#define SYS_MAX             108
 
 /*
  * Arguments of the older system calls that take more than three, passed
@@ -177,5 +185,9 @@ struct aquila_thread_args {
 
 /* SYS_sigtimedwait: the timeout is a struct aquila_timespec, or NULL to
  * wait for as long as it takes */
+
+/* SYS_clock_nanosleep: flags */
+#define AQUILA_TIMER_ABSTIME    4   /* the time is when to wake up, not
+                                     * how long to sleep */
 
 #endif /* ! _AQUILA_SYSCALL_H */

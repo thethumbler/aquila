@@ -116,6 +116,232 @@ struct vm_entry *vm_space_find(struct vm_space *vm_space, vaddr_t vaddr)
 }
 
 /**
+ * Splits a map entry in two at an address, for `mprotect()` and
+ * `munmap()` on part of a mapping: the entry keeps what is below `addr`,
+ * and a new entry after it in the list has the rest, with the same
+ * permissions and object. The pages the anon has at or past `addr` move
+ * to an anon of the new entry's own. An anon that a fork shares is
+ * copied first, as the first write to it would (`mm/fault.c`), so that
+ * the other process's mapping doesn't change. The page tables don't
+ * change.
+ *
+ * @param vm_space  the address space
+ * @param vm_entry  the entry
+ * @param addr      where to split it, on a page, past its start and
+ *                  before its end
+ * @return 0, `-EINVAL` for such an address, or `-ENOMEM` if there was no
+ *         memory for the new entry; the entry is as it was then (but for
+ *         its anon, copied maybe)
+ */
+int vm_space_split(struct vm_space *vm_space, struct vm_entry *vm_entry, vaddr_t addr)
+{
+    if ((addr & PAGE_MASK) || addr <= vm_entry->base || addr - vm_entry->base >= vm_entry->size)
+        return -EINVAL;
+
+    size_t delta = addr - vm_entry->base;
+
+    struct vm_entry *right = vm_entry_new();
+    struct qnode *node = kmalloc(sizeof(struct qnode), &M_QNODE, M_ZERO);
+    struct vm_anon *vm_anon = vm_entry->vm_anon, *right_anon = NULL;
+
+    if (!right || !node)
+        goto nomem;
+
+    if (vm_anon) {
+        /* the anon is shared with another process: this mapping gets its
+         * own, to split */
+        if (vm_anon->ref > 1) {
+            struct vm_anon *copy = vm_anon_copy(vm_anon);
+
+            if (!copy)
+                goto nomem;
+
+            vm_anon_decref(vm_anon);
+            vm_entry->vm_anon = vm_anon = copy;
+        }
+
+        /* the anon is keyed by the offset in the object */
+        if (!(right_anon = vm_anon_split(vm_anon, vm_entry->off + delta)))
+            goto nomem;
+    }
+
+    *right = *vm_entry;
+    right->base    = addr;
+    right->size    = vm_entry->size - delta;
+    right->off     = vm_entry->off + delta;
+    right->paddr   = vm_entry->paddr ? vm_entry->paddr + delta : 0;
+    right->vm_anon = right_anon;
+    right->qnode   = node;
+
+    if (right->vm_object)
+        vm_object_incref(right->vm_object);
+
+    vm_entry->size = delta;
+
+    /* the new entry goes right after the old one */
+    struct qnode *prev = vm_entry->qnode;
+
+    node->value = right;
+    node->prev  = prev;
+    node->next  = prev->next;
+
+    if (prev->next)
+        prev->next->prev = node;
+    else
+        vm_space->vm_entries.tail = node;
+
+    prev->next = node;
+    vm_space->vm_entries.count++;
+
+    return 0;
+
+nomem:
+    kfree(right);
+    kfree(node);
+    return -ENOMEM;
+}
+
+/** Splits the entries of an address space that cross `start` or `end`,
+ * so that every entry is either inside the range or outside it. Returns
+ * 0 or `-ENOMEM`. */
+static int vm_space_cut(struct vm_space *vm_space, vaddr_t start, vaddr_t end)
+{
+    struct vm_entry *vm_entry;
+    int err;
+
+    if ((vm_entry = vm_space_find(vm_space, start)) && vm_entry->base < start &&
+            (err = vm_space_split(vm_space, vm_entry, start)))
+        return err;
+
+    if ((vm_entry = vm_space_find(vm_space, end)) && vm_entry->base < end &&
+            (err = vm_space_split(vm_space, vm_entry, end)))
+        return err;
+
+    return 0;
+}
+
+/** Says whether every page of a range of an address space is mapped. */
+static int vm_space_covers(struct vm_space *vm_space, vaddr_t start, vaddr_t end)
+{
+    vaddr_t at = start;
+
+    /* the entries are in address order: each must start where the
+     * range is mapped up to */
+    queue_for (node, &vm_space->vm_entries) {
+        struct vm_entry *vm_entry = node->value;
+        vaddr_t vm_end = vm_entry->base + vm_entry->size;
+
+        if (!vm_entry->size || vm_end <= at)
+            continue;
+
+        if (vm_entry->base > at)
+            return 0;
+
+        at = vm_end;
+
+        if (at >= end)
+            return 1;
+    }
+
+    return 0;
+}
+
+/**
+ * Changes the permissions of a range of an address space, for
+ * `mprotect()`. The entries that cross either end of the range are split
+ * there first.
+ *
+ * The pages already mapped get the new permissions, but never writable:
+ * a write to one faults, and the fault makes the page writable if the
+ * process has it alone, or copies it (`mm/fault.c`), as for a page a fork
+ * shared. Without any permission, the pages are unmapped instead, and
+ * stay with the anon. Device memory (`paddr`), which no fault brings in,
+ * is mapped again with the permissions as they are.
+ *
+ * @param vm_space  the address space
+ * @param start     the range's start, on a page
+ * @param end       its end, on a page
+ * @param perm      the user permissions (`VM_UR`, `VM_UW`, `VM_UX`)
+ * @return 0, or `-ENOMEM` if a page of the range isn't mapped (nothing
+ *         changes then), or if there was no memory to split an entry or
+ *         for a page table of device memory
+ */
+int vm_space_protect(struct vm_space *vm_space, vaddr_t start, vaddr_t end, uint32_t perm)
+{
+    int err;
+
+    if (!vm_space_covers(vm_space, start, end))
+        return -ENOMEM;
+
+    if ((err = vm_space_cut(vm_space, start, end)))
+        return err;
+
+    queue_for (node, &vm_space->vm_entries) {
+        struct vm_entry *vm_entry = node->value;
+        vaddr_t sva = vm_entry->base, eva = sva + vm_entry->size;
+
+        if (!vm_entry->size || sva < start || eva > end)
+            continue;
+
+        vm_entry->flags = (vm_entry->flags & ~VM_PERM) | perm;
+
+        if (vm_entry->paddr) {
+            /* device memory doesn't come in on faults: it's mapped again
+             * whole, with the new permissions */
+            pmap_remove(vm_space->pmap, sva, eva);
+
+            if (perm && (err = vm_map(vm_space, vm_entry)))
+                return err;
+        } else if (!perm) {
+            pmap_remove(vm_space->pmap, sva, eva);
+        } else {
+            pmap_protect(vm_space->pmap, sva, eva, perm & ~VM_UW);
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * Removes the mappings of a range of an address space, for `munmap()`.
+ * The entries that cross either end of the range are split there first,
+ * and those inside it go, with the pages that only they had. Parts of the
+ * range that aren't mapped are left alone.
+ *
+ * @param vm_space  the address space
+ * @param start     the range's start, on a page
+ * @param end       its end, on a page
+ * @return 0, or `-ENOMEM` if there was no memory to split an entry
+ *         (nothing is removed then)
+ */
+int vm_space_remove(struct vm_space *vm_space, vaddr_t start, vaddr_t end)
+{
+    int err;
+
+    if ((err = vm_space_cut(vm_space, start, end)))
+        return err;
+
+    struct qnode *node = vm_space->vm_entries.head;
+
+    while (node) {
+        struct qnode *next = node->next;
+        struct vm_entry *vm_entry = node->value;
+        vaddr_t sva = vm_entry->base, eva = sva + vm_entry->size;
+
+        if (vm_entry->size && sva >= start && eva <= end) {
+            queue_node_remove(&vm_space->vm_entries, node);
+            pmap_remove(vm_space->pmap, sva, eva);
+            vm_entry_destroy(vm_entry);
+            kfree(vm_entry);
+        }
+
+        node = next;
+    }
+
+    return 0;
+}
+
+/**
  * Removes all the mappings of an address space: its entries are released
  * and freed, and its page tables emptied.
  *

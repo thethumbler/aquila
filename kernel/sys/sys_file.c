@@ -613,6 +613,105 @@ long sys_write(int fd, void *buf, size_t nbytes)
 }
 
 /**
+ * Sets up `tmp` to read or write `file` at `offset`, for `pread()` and
+ * `pwrite()`: a copy of the open file whose offset is `offset`, so that
+ * the file's own offset, which other descriptors and threads share,
+ * doesn't move. Returns 0, `-ESPIPE` if the file can't seek (a socket, a
+ * pipe, a terminal), or `-EINVAL` for a negative offset.
+ */
+static int file_at(struct file *file, off_t offset, struct file *tmp)
+{
+    if (file->flags & FILE_SOCKET)
+        return -ESPIPE;
+
+    *tmp = *file;
+
+    /* seeking the copy says whether the file can seek, and checks the
+     * offset as lseek() would */
+    off_t ret = vfs_file_lseek(tmp, offset, 0 /* SEEK_SET */);
+    return ret < 0 ? (int) ret : 0;
+}
+
+/**
+ * Implements `pread()`: `read()` at an offset, which doesn't move the
+ * file's offset.
+ *
+ * @param fildes  the descriptor
+ * @param buf     where to put the data
+ * @param nbytes  how much to read, at most
+ * @param offset  where to read from in the file
+ * @return how many bytes were read (0 at the end), or a negative errno:
+ *         `-EBADF`, `-EFAULT`, `-ESPIPE`, `-EINVAL`, ...
+ */
+long sys_pread(int fildes, void *buf, size_t nbytes, off_t offset)
+{
+    syscall_log(LOG_DEBUG, "pread(fd=%d, buf=%p, count=%d, offset=%ld)\n",
+            fildes, buf, nbytes, (int64_t) offset);
+
+    struct file *file = fd_file(fildes);
+    struct file at;
+    int err;
+
+    if (!file) {
+        return -EBADF;
+    }
+
+    if ((err = file_at(file, offset, &at))) {
+        return err;
+    }
+
+    if (uaccess_check(buf, nbytes)) {
+        return -EFAULT;
+    }
+
+    struct iobuf io;
+    iobuf_init(&io, buf, nbytes, 1);
+
+    return vfs_file_read(&at, &io);
+}
+
+/**
+ * Implements `pwrite()`: `write()` at an offset, which doesn't move the
+ * file's offset. `O_APPEND` doesn't apply: the data goes at `offset`, as
+ * POSIX says (Linux appends instead).
+ *
+ * @param fd      the descriptor
+ * @param buf     the data
+ * @param nbytes  how much to write
+ * @param offset  where to write in the file
+ * @return how many bytes were written, or a negative errno: `-EBADF`,
+ *         `-EFAULT`, `-ESPIPE`, `-EINVAL`, `-ENOSPC`, ...
+ */
+long sys_pwrite(int fd, void *buf, size_t nbytes, off_t offset)
+{
+    syscall_log(LOG_DEBUG, "pwrite(fd=%d, buf=%p, nbytes=%d, offset=%ld)\n",
+            fd, buf, nbytes, (int64_t) offset);
+
+    struct file *file = fd_file(fd);
+    struct file at;
+    int err;
+
+    if (!file) {
+        return -EBADF;
+    }
+
+    if ((err = file_at(file, offset, &at))) {
+        return err;
+    }
+
+    if (uaccess_check(buf, nbytes)) {
+        return -EFAULT;
+    }
+
+    at.flags &= ~O_APPEND;
+
+    struct iobuf io;
+    iobuf_init(&io, buf, nbytes, 1);
+
+    return vfs_file_write(&at, &io);
+}
+
+/**
  * Implements `ioctl()`: a device's, a socket's, or a terminal's request.
  * `FIONBIO`, which sets the descriptor's `O_NONBLOCK`, works on any file.
  *
@@ -803,16 +902,14 @@ long sys_mkdir(const char *path, mode_t mode)
     return do_mknodat(AT_FDCWD, path, S_IFDIR | (mode & 07777), 0);
 }
 
-/**
- * Implements `pipe()`: makes a pipe, its read end and its write end open
- * on two new descriptors.
- *
- * @param fd  where to put the two descriptors
- * @return 0, or a negative errno: `-EMFILE`, `-ENOMEM`, `-EFAULT`
- */
-long sys_pipe(int fd[2])
+/** Makes a pipe on two new descriptors, for `pipe()` and `pipe2()`:
+ * `O_NONBLOCK` in `flags` goes to both ends, and `O_CLOEXEC` to both
+ * descriptors. Returns 0 or a negative errno. */
+static int do_pipe2(int fd[2], int flags)
 {
-    syscall_log(LOG_DEBUG, "pipe(fd=%p)\n", fd);
+    if (flags & ~(O_CLOEXEC | O_NONBLOCK)) {
+        return -EINVAL;
+    }
 
     if (uaccess_check(fd, 2 * sizeof(int))) {
         return -EFAULT;
@@ -836,8 +933,13 @@ long sys_pipe(int fd[2])
     if ((err = pipefs_pipe(r, w)))
         goto error;
 
-    proc_fd_install(curproc, fd1, r, 0);
-    proc_fd_install(curproc, fd2, w, 0);
+    r->flags |= flags & O_NONBLOCK;
+    w->flags |= flags & O_NONBLOCK;
+
+    int fdflags = flags & O_CLOEXEC ? FD_CLOEXEC : 0;
+
+    proc_fd_install(curproc, fd1, r, fdflags);
+    proc_fd_install(curproc, fd2, w, fdflags);
 
     fds[0] = fd1;
     fds[1] = fd2;
@@ -863,6 +965,77 @@ error:
         proc_fd_release(curproc, fd2);
 
     return err;
+}
+
+/**
+ * Implements `pipe()`: makes a pipe, its read end and its write end open
+ * on two new descriptors.
+ *
+ * @param fd  where to put the two descriptors
+ * @return 0, or a negative errno: `-EMFILE`, `-ENOMEM`, `-EFAULT`
+ */
+long sys_pipe(int fd[2])
+{
+    syscall_log(LOG_DEBUG, "pipe(fd=%p)\n", fd);
+    return do_pipe2(fd, 0);
+}
+
+/**
+ * Implements `pipe2()`: `pipe()`, with flags for the new ends.
+ *
+ * @param fd     where to put the two descriptors
+ * @param flags  `O_NONBLOCK` for non-blocking ends, `O_CLOEXEC` for
+ *               descriptors that `exec()` closes
+ * @return 0, or a negative errno: `-EINVAL` for another flag, `-EMFILE`,
+ *         `-ENOMEM`, `-EFAULT`
+ */
+long sys_pipe2(int fd[2], int flags)
+{
+    syscall_log(LOG_DEBUG, "pipe2(fd=%p, flags=%x)\n", fd, flags);
+    return do_pipe2(fd, flags);
+}
+
+/**
+ * Implements `dup3()`, and `dup2()` in the C library: makes `newfd` refer
+ * to the open file that `oldfd` does, closing what `newfd` referred to
+ * first, in one step: no other thread can take `newfd` meanwhile.
+ *
+ * @param oldfd  the descriptor to duplicate
+ * @param newfd  the descriptor to make
+ * @param flags  `O_CLOEXEC` for a descriptor that `exec()` closes
+ * @return `newfd`, or a negative errno: `-EBADF` if `oldfd` isn't open or
+ *         `newfd` is out of range, `-EINVAL` for another flag or if both
+ *         are the same, `-EBUSY` if another thread is opening `newfd`
+ */
+long sys_dup3(int oldfd, int newfd, int flags)
+{
+    syscall_log(LOG_DEBUG, "dup3(oldfd=%d, newfd=%d, flags=%x)\n", oldfd, newfd, flags);
+
+    struct file *file = fd_file(oldfd);
+
+    if (!file || newfd < 0 || newfd >= FDS_COUNT) {
+        return -EBADF;
+    }
+
+    if ((flags & ~O_CLOEXEC) || oldfd == newfd) {
+        return -EINVAL;
+    }
+
+    /* another thread got the descriptor, and is opening a file on it */
+    struct file *old = curproc->fds[newfd].file;
+
+    if (old == FD_RESERVED) {
+        return -EBUSY;
+    }
+
+    proc_fd_install(curproc, newfd, file_ref(file), flags & O_CLOEXEC ? FD_CLOEXEC : 0);
+
+    /* what newfd referred to is closed; as for dup2(), an error closing
+     * it isn't reported */
+    if (old)
+        file_put(old);
+
+    return newfd;
 }
 
 /**

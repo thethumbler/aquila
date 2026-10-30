@@ -70,11 +70,15 @@ long sys_fstatat(int dirfd, const char *path, struct aquila_stat *buf, int flags
 long sys_unlink(const char *path);
 long sys_unlinkat(int dirfd, const char *path, int flags);
 long sys_write(int fd, void *buf, size_t nbytes);
+long sys_pread(int fildes, void *buf, size_t nbytes, off_t offset);
+long sys_pwrite(int fd, void *buf, size_t nbytes, off_t offset);
 long sys_ioctl(int fd, int request, void *argp);
 long sys_readdir(int fd, struct dirent *dirent);
 long sys_mount(struct aquila_mount_args *args);
 long sys_mkdir(const char *path, mode_t mode);
 long sys_pipe(int fd[2]);
+long sys_pipe2(int fd[2], int flags);
+long sys_dup3(int oldfd, int newfd, int flags);
 long sys_fcntl(int fd, int cmd, uintptr_t arg);
 long sys_chdir(const char *upath);
 long sys_getcwd(char *buf, size_t size);
@@ -122,6 +126,8 @@ long sys_getuid(void);
 long sys_getgid(void);
 long sys_mmap(struct aquila_mmap_args *uargs, void **ret);
 long sys_munmap(void *addr, size_t len);
+long sys_mprotect(void *addr, size_t len, int prot);
+long sys_sched_yield(void);
 long sys_sysconf(int name);
 long sys_getppid(void);
 long sys_getpgrp(void);
@@ -145,10 +151,13 @@ long sys_sigaltstack(const struct aquila_stack *ss, struct aquila_stack *oss);
 long sys_sigreturn(void);
 long sys_setitimer(int which, const struct aquila_itimer *new, struct aquila_itimer *old);
 long sys_nanosleep(const struct aquila_timespec *req, struct aquila_timespec *rem);
+long sys_clock_nanosleep(int clock, int flags, const struct aquila_timespec *req,
+                         struct aquila_timespec *rem);
 long sys_clock_gettime(int clock, struct aquila_timespec *ts);
 
 /* sys_net.c: sockets */
 long sys_socket(int domain, int type, int protocol);
+long sys_socketpair(int domain, int type, int protocol, int fd[2]);
 long sys_accept(int fd, const struct sockaddr *addr, socklen_t *len);
 long sys_bind(int fd, const struct sockaddr *addr, socklen_t len);
 long sys_connect(int fd, const struct sockaddr *addr, socklen_t len);

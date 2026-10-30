@@ -37,7 +37,7 @@ are compiled against the same numbers and structures.
 #define SYS_execve          3
 #define SYS_fork            4
 ...
-#define SYS_sigaltstack     100
+#define SYS_clock_nanosleep 108
 ```
 
 The kernel's handlers are the `sys_*` functions, by subject in

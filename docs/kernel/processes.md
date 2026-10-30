@@ -184,8 +184,10 @@ while (!what_we_wait_for())
 `sched_wait(queue, until)` sleeps on a queue with a deadline: the thread
 also goes on a list of timed threads, which the boot CPU's tick looks
 through, waking those whose time is up (`sched_timer_tick()`). It returns
-1 if the time was up. `sched_sleep()` (for `nanosleep()`) is a wait on a
-queue nothing else wakes.
+1 if the time was up. `sched_sleep()` (for `nanosleep()` and
+`clock_nanosleep()`) is a wait on a queue nothing else wakes.
+`sched_yield()` lets the ready threads run first: the caller goes to the
+end of the ready list, if another thread is ready (`arch_yield()`).
 
 `select()` and `poll()` wait for any of several files: the thread
 registers the wait queue of each (`poll_register()`) and sleeps on its
@@ -327,12 +329,15 @@ the next id.
   Joining a detached thread fails with `EINVAL`.
 
 The thread's user stack is the C library's: the kernel doesn't know
-where it starts. `thread_create()` takes the address of an int, which
-the kernel sets to 0 in `thread_exit()`, once the thread no longer uses
-its stack; the C library frees the stack of a joined thread in
-`pthread_join()`, and that of a detached one in a later
-`pthread_create()` that finds the int cleared. (Linux's
-`CLONE_CHILD_CLEARTID` is the same idea.)
+where it starts. The C library maps it with `mmap()`, 64 KiB unless
+`pthread_attr_setstacksize()` says otherwise, with a page below it made
+inaccessible with `mprotect()`: a thread that overflows its stack faults
+there (`SIGSEGV`), rather than writing over the memory below.
+`thread_create()` takes the address of an int, which the kernel sets to 0
+in `thread_exit()`, once the thread no longer uses its stack; the C
+library unmaps the stack of a joined thread in `pthread_join()`, and
+that of a detached one in a later `pthread_create()` that finds the int
+cleared. (Linux's `CLONE_CHILD_CLEARTID` is the same idea.)
 
 Each thread has its own signal mask, starting with its creator's, and
 its own pending signals; a signal can be sent to one thread
@@ -518,7 +523,7 @@ with zeros, and a signal handler starts with the registers as they were.
 | `kernel/sys/execve.c`                       | kernel  | `execve()`, scripts                          |
 | `kernel/sys/binfmt/`                        | kernel  | binary formats: ELF                          |
 | `kernel/sys/sys_proc.c`                     | kernel  | `exit`, `waitpid`, threads, `setpgid`, `setsid` |
-| `kernel/sys/sys_signal.c`                   | kernel  | `nanosleep`, `setitimer`                     |
+| `kernel/sys/sys_signal.c`                   | kernel  | `nanosleep`, `clock_nanosleep`, `setitimer`  |
 | `kernel/arch/i386/include/core/arch.h`      | x86     | `struct x86_thread`, stack sizes, `USER_STACK` |
 | `kernel/arch/i386/sys/thread.c`             | x86     | making, spawning, switching, killing threads |
 | `kernel/arch/i386/sys/sched.c`              | x86     | the idle loop, the tick's handler, killing the current thread |

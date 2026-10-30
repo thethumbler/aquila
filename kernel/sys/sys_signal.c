@@ -411,6 +411,47 @@ long sys_setitimer(int which, const struct aquila_itimer *new, struct aquila_iti
     return old ? copyout(old, &prev, sizeof(prev)) : 0;
 }
 
+/** Converts a time from user memory to ns, for the sleeps. Returns 0, or
+ * `-EINVAL` if it isn't a time (negative, or nanoseconds of a second or
+ * more). A time of more than 2^33 seconds (272 years) is cut there, so
+ * that adding it to now can't wrap around. */
+static int timespec_ns(const struct aquila_timespec *ts, uint64_t *ns)
+{
+    if ((int64_t) ts->tv_sec < 0 || ts->tv_nsec < 0 || ts->tv_nsec >= 1000000000)
+        return -EINVAL;
+
+    *ns = MIN(ts->tv_sec, 1ULL << 33) * 1000000000ULL + ts->tv_nsec;
+    return 0;
+}
+
+/** Sleeps until `until` (`arch_rtime_ns()` time), for `nanosleep()` and
+ * `clock_nanosleep()`. If a signal ends the sleep, the time left is
+ * written to `rem` (unless it's NULL), and the call fails with `EINTR`
+ * once a handler ran, or is restarted after a stop (until the same time:
+ * the caller takes `restart_until` then). Returns 0 or a negative errno. */
+static long sleep_until(uint64_t until, struct aquila_timespec *rem)
+{
+    curthread->restart_until = until;
+
+    if (!sched_sleep(until))
+        return 0;
+
+    if (rem) {
+        uint64_t now = arch_rtime_ns();
+        uint64_t left = now < until ? until - now : 0;
+        struct aquila_timespec krem = {
+            .tv_sec  = left / 1000000000ULL,
+            .tv_nsec = left % 1000000000ULL,
+        };
+
+        if (copyout(rem, &krem, sizeof(krem))) {
+            return -EFAULT;
+        }
+    }
+
+    return -ERESTARTNOHAND;
+}
+
 /**
  * Implements `nanosleep()`: sleeps for a time. A stop doesn't change the
  * deadline: the call is restarted until the same time.
@@ -426,43 +467,87 @@ long sys_nanosleep(const struct aquila_timespec *req, struct aquila_timespec *re
     syscall_log(LOG_DEBUG, "nanosleep(req=%p, rem=%p)\n", req, rem);
 
     struct aquila_timespec kreq;
+    uint64_t ns;
+    int err;
 
     if (copyin(&kreq, req, sizeof(kreq))) {
         return -EFAULT;
     }
 
-    if (kreq.tv_nsec >= 1000000000) {
-        return -EINVAL;
+    if ((err = timespec_ns(&kreq, &ns))) {
+        return err;
     }
 
     /* a call restarted after a stop keeps the deadline it had; otherwise
      * the deadline is counted from now */
     uint64_t until = curthread->restarting ? curthread->restart_until :
-                     arch_rtime_ns() + kreq.tv_sec * 1000000000ULL + kreq.tv_nsec;
+                     arch_rtime_ns() + ns;
 
-    curthread->restart_until = until;
+    return sleep_until(until, rem);
+}
 
-    if (sched_sleep(until)) {
-        /* a signal: write out the time left; the call fails with EINTR
-         * once a handler ran, or is restarted after a stop, until the same
-         * deadline */
-        if (rem) {
-            uint64_t now = arch_rtime_ns();
-            uint64_t left = now < until ? until - now : 0;
-            struct aquila_timespec krem = {
-                .tv_sec  = left / 1000000000ULL,
-                .tv_nsec = left % 1000000000ULL,
-            };
+/**
+ * Implements `clock_nanosleep()`: `nanosleep()` on a clock, for a time or
+ * until a time (`AQUILA_TIMER_ABSTIME`). A time already past doesn't
+ * sleep. The C library returns the error itself, rather than setting
+ * `errno`, as POSIX says.
+ *
+ * @param clock  `CLOCK_REALTIME` or `CLOCK_MONOTONIC`
+ * @param flags  `AQUILA_TIMER_ABSTIME` if `req` is when to wake up
+ * @param req    how long to sleep, or until when
+ * @param rem    where to put the time left if a signal ends a relative
+ *               sleep, or NULL; an absolute sleep doesn't write it
+ * @return 0, `-EINTR` if a handler ran, `-EINVAL` for a bad clock, flag
+ *         or time, or `-EFAULT`
+ */
+long sys_clock_nanosleep(int clock, int flags, const struct aquila_timespec *req,
+                         struct aquila_timespec *rem)
+{
+    syscall_log(LOG_DEBUG, "clock_nanosleep(clock=%d, flags=%x, req=%p, rem=%p)\n",
+            clock, flags, req, rem);
 
-            if (copyout(rem, &krem, sizeof(krem))) {
-                return -EFAULT;
-            }
-        }
+    struct aquila_timespec kreq;
+    uint64_t ns;
+    int err;
 
-        return -ERESTARTNOHAND;
+    if (clock != CLOCK_REALTIME && clock != CLOCK_MONOTONIC) {
+        return -EINVAL;
     }
 
-    return 0;
+    if (flags & ~AQUILA_TIMER_ABSTIME) {
+        return -EINVAL;
+    }
+
+    if (copyin(&kreq, req, sizeof(kreq))) {
+        return -EFAULT;
+    }
+
+    if ((err = timespec_ns(&kreq, &ns))) {
+        return err;
+    }
+
+    uint64_t now = arch_rtime_ns();
+    uint64_t until;
+
+    if (curthread->restarting) {
+        until = curthread->restart_until;
+    } else if (!(flags & AQUILA_TIMER_ABSTIME)) {
+        until = now + ns;
+    } else if (clock == CLOCK_MONOTONIC) {
+        /* the monotonic clock is arch_rtime_ns() */
+        until = ns;
+    } else {
+        /* the real time clock: the time from now until then, from now on
+         * the monotonic clock (setting the clock meanwhile, which can't
+         * be done yet, wouldn't change the deadline) */
+        struct timespec ts;
+        gettime(&ts);
+
+        uint64_t real = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+        until = now + (ns > real ? ns - real : 0);
+    }
+
+    return sleep_until(until, flags & AQUILA_TIMER_ABSTIME ? NULL : rem);
 }
 
 /**

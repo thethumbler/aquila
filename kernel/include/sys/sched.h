@@ -26,6 +26,9 @@ void sched_idle_wakeup(void);
 void sched_thread_ready(struct thread *thread);
 void sched_thread_wake(struct thread *thread);
 
+/* Lets the other ready threads run first. */
+void sched_yield(void);
+
 /* An urgent thread was woken up (thread->urgent): it runs once the
  * interrupt returns. */
 extern int sched_urgent;

@@ -71,6 +71,7 @@ struct sock_ops {
 
 /* The sockets' operations, whatever their domain (net/socket.c). */
 int socket_create(struct file *file, int domain, int type, int protocol);
+int socket_pair(struct file *a, struct file *b, int domain, int type, int protocol);
 int socket_bind(struct file *file, const struct sockaddr *addr, socklen_t len);
 int socket_accept(struct file *file, struct file *conn, const struct sockaddr *addr, socklen_t *len);
 int socket_connect(struct file *file, const struct sockaddr *addr, socklen_t len);
@@ -89,6 +90,7 @@ int socket_shutdown_dir(struct file *file, int how);
 
 /* AF_UNIX */
 int socket_unix_create(struct file *file, int domain, int type, int protocol);
+int socket_unix_pair(struct file *a, struct file *b, int type, int protocol);
 
 /* AF_INET */
 int socket_inet_create(struct file *file, int domain, int type, int protocol);
