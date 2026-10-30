@@ -103,6 +103,46 @@ diff -ruN a/kdrive/linux/linux.c b/kdrive/linux/linux.c
  }
  
  static void LinuxFini(void)
+diff -ruN a/kdrive/linux/mouse.c b/kdrive/linux/mouse.c
+--- a/kdrive/linux/mouse.c
++++ b/kdrive/linux/mouse.c
+@@ -392,15 +392,21 @@
+ 
+ #define NINIT_PS2   1
+ 
++/*
++ * AquilaOS: the mouse ACKs every byte, a command's argument too, and
++ * the ID was read already: without PSMC_SEND_DEV_ID, and counting every
++ * ACK. (With it, and the commands counted, three ACKs and the ID were
++ * left to read as a packet: 0xfa is a valid header, with the right
++ * button down, which opened the window manager's menu.)
++ */
+ static const unsigned char wheel_3button_init[] = {
+ 	PSMC_SET_SAMPLING_RATE, 200,
+ 	PSMC_SET_SAMPLING_RATE, 100,
+ 	PSMC_SET_SAMPLING_RATE, 80,
+-	PSMC_SEND_DEV_ID,
+ 	0,
+ };
+ 
+-#define NINIT_IMPS2 4
++#define NINIT_IMPS2 6
+ 
+ static const unsigned char wheel_5button_init[] = {
+ 	PSMC_SET_SAMPLING_RATE, 200,
+@@ -409,11 +415,10 @@
+ 	PSMC_SET_SAMPLING_RATE, 200,
+ 	PSMC_SET_SAMPLING_RATE, 200,
+ 	PSMC_SET_SAMPLING_RATE, 80,
+-	PSMC_SEND_DEV_ID,
+ 	0
+ };
+ 
+-#define NINIT_EXPS2 7
++#define NINIT_EXPS2 12
+ 
+ static const unsigned char intelli_init[] = {
+ 	PSMC_SET_SAMPLING_RATE, 200,
 diff -ruN a/kdrive/src/kinput.c b/kdrive/src/kinput.c
 --- a/kdrive/src/kinput.c
 +++ b/kdrive/src/kinput.c

@@ -4,7 +4,8 @@
 #
 # Xfbdev draws on /dev/fb0 and takes the keyboard and mouse of a virtual
 # terminal, with the console ioctls of Linux (KD*, VT_*), which the kernel
-# has. aquila.patch builds its Linux code for AquilaOS.
+# has. aquila.patch builds its Linux code for AquilaOS, and fixes the
+# PS/2 mouse's wheel setup (its replies were read as a right click).
 
 NAME=tinyx
 VERSION=1.2.0
