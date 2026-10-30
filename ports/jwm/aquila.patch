@@ -1,3 +1,31 @@
+diff -ruN a/src/image.c b/src/image.c
+--- a/src/image.c
++++ b/src/image.c
+@@ -360,15 +360,19 @@
+     */
+    jpeg_calc_output_dimensions(&cinfo);
+    if(width != 0 && height != 0) {
+-      /* Scale using n/8 with n in [1..8]. */
+-      int ratio;
++      /* Scale using n/8 with n in [1..8]. AquilaOS: n in eighths,
++       * rounded up, so that the image is never decoded smaller than it
++       * is drawn (ratio was in sixteenths, shifted as if in quarters: a
++       * 1920x1072 wallpaper on a 1280x800 screen was decoded at 2/8,
++       * 480x268, and blown up). */
++      int n;
+       if(abs((int)cinfo.output_width - width)
+             < abs((int)cinfo.output_height - height)) {
+-         ratio = (width << 4) / cinfo.output_width;
++         n = (width * 8 + cinfo.output_width - 1) / cinfo.output_width;
+       } else {
+-         ratio = (height << 4) / cinfo.output_height;
++         n = (height * 8 + cinfo.output_height - 1) / cinfo.output_height;
+       }
+-      cinfo.scale_num = Max(1, Min(8, (ratio >> 2)));
++      cinfo.scale_num = Max(1, Min(8, n));
+       cinfo.scale_denom = 8;
+    }
+ 
 diff -ruN a/src/parse.c b/src/parse.c
 --- a/src/parse.c
 +++ b/src/parse.c
