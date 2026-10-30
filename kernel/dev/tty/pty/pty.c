@@ -40,11 +40,14 @@ struct pty {
      *  read */
     struct ringbuf *out;
 
-    /** where the slave's readers sleep, and the writers waiting for room
-     *  in either ring (pty_slave_write(), pty_master_write()) */
+    /** the read queue of both the master and the slave: where the readers
+     *  of either side sleep, and the writers waiting for room in either
+     *  ring (pty_slave_write(), pty_master_write()) */
     struct waitq pts_read_queue;
 
-    /** where the slave's writers and the master's readers sleep */
+    /** the write queue of both the master and the slave: woken up when
+     *  either side is read (posix_file_read()); writes wait in the rings'
+     *  writers above instead, so it is mostly for poll() and select() */
     struct waitq pts_write_queue;
 };
 
