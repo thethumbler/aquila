@@ -10,7 +10,7 @@
 
     <!-- the desktop's right button menu: root:3 to JWM -->
     <RootMenu onroot="3" height="0">
-        <Program icon="aquila.xpm" label="Terminal">aquila-theme term</Program>
+        <Program label="Terminal">aquila-theme term</Program>
         <Program label="XTerm">xterm</Program>
         <Separator/>
         <Menu label="Games">
@@ -30,7 +30,7 @@
     </Group>
 
     <Tray x="0" y="-1" height="36" autohide="off">
-        <TrayButton icon="aquila.xpm" label="AquilaOS">root:3</TrayButton>
+        <TrayButton label="AquilaOS">root:3</TrayButton>
         <Spacer width="6"/>
         <Pager labeled="false"/>
         <Spacer width="6"/>
@@ -39,10 +39,6 @@
         <Clock format="%a %d %b  %H:%M"/>
         <Spacer width="6"/>
     </Tray>
-
-    <IconPath>/usr/share/aquila</IconPath>
-    <!-- the logo for the windows that have no icon of their own -->
-    <DefaultIcon>aquila.xpm</DefaultIcon>
 
     <DoubleClickSpeed>400</DoubleClickSpeed>
     <DoubleClickDelta>2</DoubleClickDelta>

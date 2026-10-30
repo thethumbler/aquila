@@ -45,10 +45,6 @@ build()
 
     # the wallpaper, both themes'
     install -m 644 "$port/wallpaper.jpg" "$share/wallpaper.jpg"
-
-    # the menu's icon: the logo in the accent, on nothing (None: the
-    # background shows through)
-    "$port/logo-xpm" aquila 24 24 3 None '#d19a6c' > "$share/aquila.xpm"
 }
 
 # a theme: its JWM style
