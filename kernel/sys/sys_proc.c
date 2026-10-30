@@ -281,7 +281,8 @@ long sys_uname(struct utsname *name)
  * @param __uthread  the arguments, in user memory: the thread's stack,
  *                   the C library's start, the thread's function and its
  *                   argument
- * @return the new thread's ID, or a negative errno: `-EFAULT`, `-ENOMEM`
+ * @return the new thread's ID, or a negative errno: `-EFAULT`, `-EINVAL`
+ *         (it would start past user space), `-ENOMEM`
  */
 long sys_thread_create(struct aquila_thread_args *__uthread)
 {
@@ -302,6 +303,11 @@ long sys_thread_create(struct aquila_thread_args *__uthread)
         uaccess_check((void *) (stack - 3 * sizeof(uintptr_t)), 3 * sizeof(uintptr_t))) {
         return -EFAULT;
     }
+
+    /* it starts in user space: on x86_64 returning to an address past it
+     * (not canonical) would fault in the kernel */
+    if (a.entry >= UACCESS_LIMIT)
+        return -EINVAL;
 
     int err = 0;
     struct thread *thread = NULL;

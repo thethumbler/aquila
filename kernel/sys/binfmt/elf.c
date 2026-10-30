@@ -56,6 +56,11 @@ static int binfmt_elf_load_segments(struct proc *proc, struct vnode *vnode)
     if (hdr.e_phentsize < sizeof(elf_phdr))
         goto e_inval;
 
+    /* it starts in user space: on x86_64 returning to an address past it
+     * (not canonical) would fault in the kernel */
+    if (hdr.e_entry >= USER_STACK)
+        goto e_inval;
+
     uintptr_t proc_heap = 0;
     size_t offset = hdr.e_phoff;
 

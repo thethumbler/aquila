@@ -283,6 +283,13 @@ void x86_return_to_user(struct x86_regs *r, int syscall)
         proc->sigmask = thread->sig_oldmask;
         thread->sig_oldmask_set = 0;
     }
+
+    /* an instruction pointer past user space, from a sigreturn frame,
+     * can't be returned to (sigaction() checks handlers): on x86_64 one
+     * that isn't canonical makes iretq fault in the kernel, with user
+     * mode's GS */
+    if (REG_IP(r) >= UACCESS_LIMIT)
+        signal_exit(SIGSEGV);
 }
 
 /* Returns from a signal handler (`sigreturn`): restores the interrupted
