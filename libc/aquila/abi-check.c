@@ -15,6 +15,7 @@
 #include <sys/times.h>
 #include <sys/wait.h>
 #include <time.h>
+#include <ucontext.h>
 
 #include <aquila/errno.h>
 
@@ -23,6 +24,7 @@
 #undef sa_handler
 #undef sa_sigaction
 #include <aquila/signal.h>
+#include <aquila/ucontext.h>
 #include <aquila/stat.h>
 #include <aquila/time.h>
 #include <aquila/wait.h>
@@ -84,8 +86,48 @@ _Static_assert(WNOHANG == 1 && WUNTRACED == 2 && WCONTINUED == 8, "waitpid optio
 _Static_assert(WIFCONTINUED(0xffff) && WIFSTOPPED((SIGTSTP << 8) | 0x7f) &&
                WSTOPSIG((SIGTSTP << 8) | 0x7f) == SIGTSTP, "wait status does not match the kernel");
 
-/* what signal handlers get as their second argument */
-_Static_assert(sizeof(siginfo_t) == sizeof(struct aquila_siginfo) &&
-               offsetof(siginfo_t, si_signo) == offsetof(struct aquila_siginfo, si_signo) &&
-               offsetof(siginfo_t, si_addr) == offsetof(struct aquila_siginfo, si_addr),
-               "siginfo_t does not match the kernel");
+/* what signal handlers get as their second and third arguments, and
+ * sigaltstack()'s stack (the si_code values are checked as the errno
+ * numbers are) */
+#define SAME_TYPE_FIELD(a, b, f) \
+    _Static_assert(offsetof(a, f) == offsetof(struct b, f) && \
+                   sizeof(((a *) 0)->f) == sizeof(((struct b *) 0)->f), \
+                   #a " ." #f " does not match the kernel")
+
+_Static_assert(sizeof(siginfo_t) == sizeof(struct aquila_siginfo), "siginfo_t size does not match the kernel");
+SAME_TYPE_FIELD(siginfo_t, aquila_siginfo, si_signo);
+SAME_TYPE_FIELD(siginfo_t, aquila_siginfo, si_code);
+SAME_TYPE_FIELD(siginfo_t, aquila_siginfo, si_errno);
+SAME_TYPE_FIELD(siginfo_t, aquila_siginfo, si_pid);
+SAME_TYPE_FIELD(siginfo_t, aquila_siginfo, si_uid);
+SAME_TYPE_FIELD(siginfo_t, aquila_siginfo, si_status);
+SAME_TYPE_FIELD(siginfo_t, aquila_siginfo, si_addr);
+SAME_TYPE_FIELD(siginfo_t, aquila_siginfo, si_value);
+
+_Static_assert(sizeof(stack_t) == sizeof(struct aquila_stack), "stack_t size does not match the kernel");
+SAME_TYPE_FIELD(stack_t, aquila_stack, ss_sp);
+SAME_TYPE_FIELD(stack_t, aquila_stack, ss_flags);
+SAME_TYPE_FIELD(stack_t, aquila_stack, ss_size);
+_Static_assert(SA_ONSTACK == 0x40, "SA_ONSTACK does not match the kernel");
+
+_Static_assert(sizeof(ucontext_t) == sizeof(struct aquila_ucontext), "ucontext_t size does not match the kernel");
+SAME_TYPE_FIELD(ucontext_t, aquila_ucontext, uc_link);
+SAME_TYPE_FIELD(ucontext_t, aquila_ucontext, uc_sigmask);
+SAME_TYPE_FIELD(ucontext_t, aquila_ucontext, uc_stack);
+SAME_TYPE_FIELD(ucontext_t, aquila_ucontext, uc_mcontext);
+_Static_assert(sizeof(mcontext_t) == sizeof(struct aquila_mcontext), "mcontext_t size does not match the kernel");
+#if defined(__x86_64__)
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, rsp);
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, r8);
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, rip);
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, rflags);
+#elif defined(__i386__)
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, esp);
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, eip);
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, eflags);
+#elif defined(__aarch64__)
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, x);
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, sp);
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, pc);
+SAME_TYPE_FIELD(mcontext_t, aquila_mcontext, pstate);
+#endif

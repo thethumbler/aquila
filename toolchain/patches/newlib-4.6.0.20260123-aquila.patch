@@ -258,17 +258,72 @@ diff -ruN a/newlib/libc/include/sys/features.h b/newlib/libc/include/sys/feature
 diff -ruN a/newlib/libc/include/sys/signal.h b/newlib/libc/include/sys/signal.h
 --- a/newlib/libc/include/sys/signal.h
 +++ b/newlib/libc/include/sys/signal.h
-@@ -70,6 +70,9 @@
+@@ -66,11 +66,64 @@
+ #define SI_ASYNCIO 4    /* Indicates completion of asycnhronous IO */
+ #define SI_MESGQ   5    /* Indicates arrival of a message at an empty queue */
+ 
++#ifdef __aquila__
++/* the kernel's struct aquila_siginfo */
+ typedef struct {
    int          si_signo;    /* Signal number */
    int          si_code;     /* Cause of the signal */
-   union sigval si_value;    /* Signal value */
-+#ifdef __aquila__
++  int          si_errno;    /* An errno for the signal (0) */
++  pid_t        si_pid;      /* Sending process (SIGCHLD: the child) */
++  uid_t        si_uid;      /* Its real user id */
++  int          si_status;   /* SIGCHLD: exit value or signal */
 +  void        *si_addr;     /* Faulting address (SIGSEGV, SIGBUS, ...) */
-+#endif
+   union sigval si_value;    /* Signal value */
  } siginfo_t;
++
++#define SI_KERNEL  0x80 /* Sent by the kernel */
++
++/* si_code values of the signals the CPU raises and of SIGCHLD (the
++ * kernel's <aquila/signal.h>) */
++#define ILL_ILLOPC      1
++#define ILL_ILLOPN      2
++#define ILL_ILLADR      3
++#define ILL_ILLTRP      4
++#define ILL_PRVOPC      5
++#define ILL_PRVREG      6
++#define ILL_COPROC      7
++#define ILL_BADSTK      8
++
++#define FPE_INTDIV      1
++#define FPE_INTOVF      2
++#define FPE_FLTDIV      3
++#define FPE_FLTOVF      4
++#define FPE_FLTUND      5
++#define FPE_FLTRES      6
++#define FPE_FLTINV      7
++#define FPE_FLTSUB      8
++
++#define SEGV_MAPERR     1
++#define SEGV_ACCERR     2
++
++#define BUS_ADRALN      1
++#define BUS_ADRERR      2
++#define BUS_OBJERR      3
++
++#define TRAP_BRKPT      1
++#define TRAP_TRACE      2
++
++#define CLD_EXITED      1
++#define CLD_KILLED      2
++#define CLD_DUMPED      3
++#define CLD_TRAPPED     4
++#define CLD_STOPPED     5
++#define CLD_CONTINUED   6
++#else
++typedef struct {
++  int          si_signo;    /* Signal number */
++  int          si_code;     /* Cause of the signal */
++  union sigval si_value;    /* Signal value */
++} siginfo_t;
++#endif
  #endif /* defined(_POSIX_REALTIME_SIGNALS) || __POSIX_VISIBLE >= 199309 */
  
-@@ -113,6 +116,31 @@
+ #if defined(__rtems__)
+@@ -113,6 +166,32 @@
  #define sa_sigaction  _signal_handlers._sigaction
  #endif
  
@@ -281,6 +336,7 @@ diff -ruN a/newlib/libc/include/sys/signal.h b/newlib/libc/include/sys/signal.h
 +#define SA_RESTART   0x8   /* A call the signal interrupts is restarted */
 +#define SA_NODEFER   0x10  /* Not blocked while its handler runs */
 +#define SA_RESETHAND 0x20  /* The handler goes (SIG_DFL) once it's run */
++#define SA_ONSTACK   0x40  /* The handler runs on the sigaltstack() stack */
 +
 +typedef void (*_sig_func_ptr)(int);
 +
@@ -393,6 +449,41 @@ diff -ruN a/newlib/libc/posix/_isatty.c b/newlib/libc/posix/_isatty.c
  }
 +
 +#endif /* !__aquila__ */
+diff -ruN a/newlib/libc/signal/raise.c b/newlib/libc/signal/raise.c
+--- a/newlib/libc/signal/raise.c
++++ b/newlib/libc/signal/raise.c
+@@ -59,11 +59,31 @@
+ 
+ #endif
+ 
++#ifdef __aquila__
++#include <pthread.h>
++
++/* to the calling thread, as POSIX says for a program with threads */
++int
++_raise_r (struct _reent *reent,
++	int sig)
++{
++  int err = pthread_kill (pthread_self (), sig);
++
++  if (err)
++    {
++      _REENT_ERRNO (reent) = err;
++      return -1;
++    }
++
++  return 0;
++}
++#else
+ int
+ _raise_r (struct _reent *reent,
+ 	int sig)
+ {
+   return _kill_r (reent, _getpid_r (reent), sig);
+ }
++#endif
+ 
+ #endif /* SIGNAL_PROVIDED */
 diff -ruN a/newlib/libc/string/wcwidth.c b/newlib/libc/string/wcwidth.c
 --- a/newlib/libc/string/wcwidth.c
 +++ b/newlib/libc/string/wcwidth.c

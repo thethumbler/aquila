@@ -224,6 +224,11 @@ int sigprocmask(int how, const sigset_t *set, sigset_t *oldset)
     return SYSCALL(SYS_sigmask, how, set, oldset);
 }
 
+int sigaltstack(const stack_t *ss, stack_t *oss)
+{
+    return SYSCALL(SYS_sigaltstack, ss, oss, 0);
+}
+
 int sigpending(sigset_t *set)
 {
     return SYSCALL(SYS_sigpending, set, 0, 0);
