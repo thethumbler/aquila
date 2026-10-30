@@ -293,6 +293,42 @@ const syscall_t syscall_table[] = {
 const size_t syscall_cnt = sizeof(syscall_table)/sizeof(syscall_table[0]);
 
 
+/* how many "undefined syscall" messages a second at most: any process can
+ * make such calls in a loop, and would flood the console */
+#define NOSYS_PER_SEC   5
+
+/** Reports a call to an undefined system call on the console, at most
+ * `NOSYS_PER_SEC` times a second; the ones left out are counted, and the
+ * next message says how many there were. */
+static void nosys_report(unsigned long nr)
+{
+    static uint64_t second;     /* the second the messages are counted in */
+    static unsigned shown;      /* the messages shown in that second */
+    static unsigned dropped;    /* the ones left out since the last shown */
+
+    uint64_t now = arch_rtime_ns() / 1000000000;
+
+    if (now != second) {
+        second = now;
+        shown  = 0;
+    }
+
+    if (shown == NOSYS_PER_SEC) {
+        dropped++;
+        return;
+    }
+
+    shown++;
+
+    if (dropped) {
+        printk("(%u undefined syscalls not shown)\n", dropped);
+        dropped = 0;
+    }
+
+    printk("[%d:%d] %s: undefined syscall %ld\n", curproc->pid, curthread->tid,
+           curproc->name, (int64_t) nr);
+}
+
 /**
  * Runs a system call that the current thread made from user mode. The
  * architecture's `arch_syscall()` calls it with the number and the
@@ -316,8 +352,7 @@ void syscall_dispatch(unsigned long nr, uintptr_t a1, uintptr_t a2, uintptr_t a3
     curthread->syscall_nr = nr;
 
     if (nr >= syscall_cnt || !syscall_table[nr]) {
-        printk("[%d:%d] %s: undefined syscall %ld\n", curproc->pid, curthread->tid,
-               curproc->name, (int64_t) nr);
+        nosys_report(nr);
         arch_syscall_return(curthread, -ENOSYS);
         return;
     }

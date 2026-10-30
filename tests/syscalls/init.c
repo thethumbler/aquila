@@ -2009,6 +2009,18 @@ void aq_main(void)
     /* user ids: the removed auth syscall, setuid/setgid rules */
     check("auth syscall removed", SC(35, 0, 0, 0), -ENOSYS);
 
+    /* undefined calls in a loop: each fails, and the console isn't
+     * flooded (a few messages a second, the rest counted) */
+    {
+        int start = now_ms(), enosys = 0;
+
+        for (int i = 0; i < 20000; i++)
+            enosys += SC(9999, 0, 0, 0) == -ENOSYS;
+
+        check("undefined syscall 20000 times: ENOSYS", enosys, 20000);
+        check("undefined syscall 20000 times: quick", now_ms() - start < 1000, 1);
+    }
+
     int fd2 = SC(SYS_open, "/tmp/secret", O_CREAT | O_RDWR, 0600);
     check("create root-only file", fd2 >= 0, 1);
     SC(SYS_close, fd2, 0, 0);
