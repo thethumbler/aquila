@@ -266,8 +266,8 @@ static int vm_space_covers(struct vm_space *vm_space, vaddr_t start, vaddr_t end
  * @param perm      the user permissions (`VM_UR`, `VM_UW`, `VM_UX`)
  * @return 0, `-ENOMEM` if a page of the range isn't mapped (nothing
  *         changes then), or if there was no memory to split an entry or
- *         for a page table of device memory, or `-EACCES` to make a
- *         file's shared mapping writable
+ *         for a page table of device memory, or `-EACCES` to make
+ *         writable a file's shared mapping that was open read only
  */
 int vm_space_protect(struct vm_space *vm_space, vaddr_t start, vaddr_t end, uint32_t perm)
 {
@@ -276,14 +276,15 @@ int vm_space_protect(struct vm_space *vm_space, vaddr_t start, vaddr_t end, uint
     if (!vm_space_covers(vm_space, start, end))
         return -ENOMEM;
 
-    /* a file's shared mapping can't be written to: what's written isn't
-     * written back to the file yet */
+    /* a file's shared mapping is written to the file: it may be made
+     * writable only if the file was open for writing (VM_MAYWRITE) */
     queue_for (node, &vm_space->vm_entries) {
         struct vm_entry *vm_entry = node->value;
         vaddr_t eva = vm_entry->base + vm_entry->size;
 
         if (vm_entry->size && eva > start && vm_entry->base < end && (perm & VM_UW) &&
-            (vm_entry->flags & VM_SHARED) && vm_entry->vm_object && !vm_entry->paddr)
+            (vm_entry->flags & VM_SHARED) && vm_entry->vm_object && !vm_entry->paddr &&
+            !(vm_entry->flags & VM_MAYWRITE))
             return -EACCES;
     }
 
@@ -314,6 +315,43 @@ int vm_space_protect(struct vm_space *vm_space, vaddr_t start, vaddr_t end, uint
     }
 
     return 0;
+}
+
+/**
+ * Writes back the pages of the files that a range of an address space
+ * maps shared, for `msync()`: the whole files.
+ *
+ * @param vm_space  the address space
+ * @param start     the range's start, on a page
+ * @param end       its end, on a page
+ * @return 0, `-ENOMEM` if a page of the range isn't mapped, or a write's
+ *         error
+ */
+int vm_space_msync(struct vm_space *vm_space, vaddr_t start, vaddr_t end)
+{
+    int err = 0;
+
+    if (end > start && !vm_space_covers(vm_space, start, end))
+        return -ENOMEM;
+
+    queue_for (node, &vm_space->vm_entries) {
+        struct vm_entry *vm_entry = node->value;
+        vaddr_t eva = vm_entry->base + vm_entry->size;
+        struct vm_object *vm_object = vm_entry->vm_object;
+
+        if (!vm_entry->size || eva <= start || vm_entry->base >= end)
+            continue;
+
+        if ((vm_entry->flags & VM_SHARED) && vm_object && vm_object->type == VMOBJ_FILE &&
+            !vm_entry->paddr) {
+            int e = vm_cache_flush((struct vnode *) vm_object->p);
+
+            if (e && !err)
+                err = e;
+        }
+    }
+
+    return err;
 }
 
 /**

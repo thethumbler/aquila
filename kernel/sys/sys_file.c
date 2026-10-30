@@ -1677,16 +1677,49 @@ long sys_flock(int fd, int op)
 }
 
 /**
- * Implements `sync()`: writes out what the devices' caches hold.
+ * Implements `sync()`: writes back the files' pages written to through
+ * shared mappings, then writes out what the devices' caches hold.
  *
- * @return 0, or a negative errno from a device
+ * @return 0, or a negative errno from a file or a device
  */
 long sys_sync(void)
 {
     syscall_log(LOG_DEBUG, "sync()\n");
 
-    /* writes go to the devices right away: only their caches are left */
-    return kdev_sync();
+    int err = vm_cache_flush_all();
+    int ret = kdev_sync();
+
+    return err ? err : ret;
+}
+
+/**
+ * Implements `fsync()` (and `fdatasync()`): writes back a file's pages
+ * written to through shared mappings, and has the disks write out what
+ * their caches hold (all of it: the caches don't know whose it is).
+ *
+ * @param fd  the file
+ * @return 0, or a negative errno: `-EBADF`, `-EINVAL` for a socket, a
+ *         pipe or a terminal, or a write's error
+ */
+long sys_fsync(int fd)
+{
+    syscall_log(LOG_DEBUG, "fsync(fd=%d)\n", fd);
+
+    struct file *file = fd_file(fd);
+
+    if (!file) {
+        return -EBADF;
+    }
+
+    if ((file->flags & FILE_SOCKET) || !file->vnode ||
+        !(S_ISREG(file->vnode->mode) || S_ISDIR(file->vnode->mode) || S_ISBLK(file->vnode->mode))) {
+        return -EINVAL;
+    }
+
+    int err = S_ISREG(file->vnode->mode) ? vm_cache_flush(file->vnode) : 0;
+    int ret = kdev_sync();
+
+    return err ? err : ret;
 }
 
 /**

@@ -46,6 +46,9 @@ struct vm_space {
 #define VM_NOCACHE    0x0040         /**< not cached (device memory) */
 #define VM_SHARED     0x0080         /**< shared: a fork doesn't copy it */
 #define VM_COPY       0x0100         /**< to be copied before it's written to */
+#define VM_MAYWRITE   0x0200         /**< a file's shared mapping that may be
+                                          made writable (the file is open
+                                          for writing) */
 
 #define VM_KRW  (VM_KR|VM_KW)        /**< kernel read/write */
 #define VM_KRX  (VM_KR|VM_KX)        /**< kernel read/execute */
@@ -159,6 +162,15 @@ struct vm_object {
     /** the map entries that map it, in any address space: how its pages
      *  are found in page tables (a reverse map, Linux's i_mmap) */
     struct list mappings;
+
+    /** how many of its pages are dirty (written to through a shared
+     *  mapping, not written back yet), and since when, in
+     *  `arch_rtime_ns()` time */
+    size_t ndirty;
+    uint64_t dirty_since;
+
+    /** its place on the page cache's list of objects with dirty pages */
+    struct list_node dirty_link;
 };
 
 /** A page of physical memory (pages[] has one for every page of RAM). */
@@ -177,7 +189,11 @@ struct vm_page {
 
     /** a file's page: how many are using it (a fault mapping it), which
      *  the page cache doesn't take back meanwhile */
-    unsigned pin;
+    unsigned short pin;
+
+    /** a file's page: written to through a shared mapping, and not written
+     *  back to the file yet */
+    unsigned char dirty;
 };
 
 /* The kernel's address space. */
@@ -200,6 +216,7 @@ int  vm_space_insert(struct vm_space *vm_space, struct vm_entry *vm_entry);
 int  vm_space_split(struct vm_space *vm_space, struct vm_entry *vm_entry, vaddr_t addr);
 int  vm_space_protect(struct vm_space *vm_space, vaddr_t start, vaddr_t end, uint32_t perm);
 int  vm_space_remove(struct vm_space *vm_space, vaddr_t start, vaddr_t end);
+int  vm_space_msync(struct vm_space *vm_space, vaddr_t start, vaddr_t end);
 
 /* mm/vm_entry.c: map entries */
 struct vm_entry *vm_entry_new(void);
@@ -221,11 +238,18 @@ void vnode_pages_free(struct vnode *vnode);
 ssize_t vm_cache_read(struct vnode *vnode, off_t off, struct iobuf *io);
 size_t vm_cache_reclaim(size_t want);
 size_t vm_cache_pages(void);
+size_t vm_cache_dirty_pages(void);
+void vm_cache_page_dirty(struct vm_object *vm_object, struct vm_page *vm_page);
+void vm_cache_dirty_throttle(void);
+int  vm_cache_flush(struct vnode *vnode);
+int  vm_cache_flush_all(void);
+void vm_cache_flusher_start(void);
 int  vm_object_page_insert(struct vm_object *vm_object, struct vm_page *vm_page);
 void vm_object_incref(struct vm_object *vm_object);
 void vm_object_decref(struct vm_object *vm_object);
 void vm_object_map(struct vm_object *vm_object, struct vm_entry *vm_entry);
 void vm_object_unmap(struct vm_object *vm_object, struct vm_entry *vm_entry);
 void vm_object_page_unmap(struct vm_object *vm_object, struct vm_page *vm_page);
+void vm_object_page_protect(struct vm_object *vm_object, struct vm_page *vm_page);
 
 #endif  /* ! _MM_VM_H */

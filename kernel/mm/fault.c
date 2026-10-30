@@ -245,6 +245,24 @@ static inline int pf_object_page(struct pf *pf, struct vm_page *vm_page)
     struct pmap *pmap = pf->vm_space->pmap;
     int err;
 
+    if (vm_entry->flags & VM_SHARED) {
+        /* a shared mapping: the file's page itself, whatever writes it.
+         * It is mapped read only until it is written to: the write that
+         * faults makes it dirty, to be written back to the file, and
+         * writable */
+        uint32_t perm = vm_entry->flags & VM_PERM;
+
+        if (pf->flags & PF_WRITE) {
+            vm_cache_dirty_throttle();
+            vm_cache_page_dirty(vm_entry->vm_object, vm_page);
+        } else {
+            perm &= ~(VM_UW | VM_KW);
+        }
+
+        err = mm_page_map(pmap, pf->addr, vm_page->paddr, perm);
+        return err ? err : 1;
+    }
+
     if (!(vm_entry->flags & VM_UW)) {
         /* a read-only mapping: map the object's page */
         err = mm_page_map(pmap, pf->addr, vm_page->paddr, vm_entry->flags & VM_PERM);
@@ -304,7 +322,8 @@ static inline int pf_object_page(struct pf *pf, struct vm_page *vm_page)
 
 /**
  * Handles a fault on a page of the object the mapping is of (a file's
- * page). A read-only mapping maps the object's page itself. A writable
+ * page). A read-only mapping maps the object's page itself, and so does a
+ * shared one (what it writes goes back to the file). A private writable
  * one gets a copy, in the process's anon: what it writes is its own.
  *
  * The page is pinned meanwhile: mapping it, or copying it, may need

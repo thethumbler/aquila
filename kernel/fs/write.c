@@ -10,7 +10,8 @@
 
 /**
  * Writes to a vnode from an iobuf (user or kernel memory). The file's
- * pages in the page cache, if it's mapped, are refreshed.
+ * pages in the page cache are refreshed: the bytes written are read
+ * again into them.
  *
  * @param vnode  the vnode
  * @param off    where to write
@@ -23,6 +24,29 @@ ssize_t vfs_write_io(struct vnode *vnode, off_t off, struct iobuf *io)
 {
     vfs_log(LOG_DEBUG, "vfs_write_io(vnode=%p, off=%d, size=%d)\n", vnode, off, io->resid);
 
+    ssize_t ret = vfs_write_raw(vnode, off, io);
+
+    /* refresh the file's pages in the page cache */
+    if (ret > 0 && vnode && !ISDEV(vnode))
+        vnode_pages_update(vnode, off, off + ret);
+
+    return ret;
+}
+
+/**
+ * Writes to a vnode from an iobuf, to its device or through its
+ * filesystem, and nothing else: the page cache writes its pages back to
+ * the file with it (the pages are what's written).
+ *
+ * @param vnode  the vnode
+ * @param off    where to write
+ * @param io     the data, and how much of it
+ * @return the number of bytes written, `-EINVAL` for an invalid vnode,
+ *         `-ENOSYS` if its filesystem can't write, or another negative
+ *         errno
+ */
+ssize_t vfs_write_raw(struct vnode *vnode, off_t off, struct iobuf *io)
+{
     /* invalid request */
     if (!vnode)
         return -EINVAL;
@@ -39,13 +63,7 @@ ssize_t vfs_write_io(struct vnode *vnode, off_t off, struct iobuf *io)
     if (!vnode->fs->vops.write)
         return -ENOSYS;
 
-    ssize_t ret = vnode->fs->vops.write(vnode, off, io);
-
-    /* refresh the file's pages in the page cache, if it's mapped */
-    if (ret > 0)
-        vnode_pages_update(vnode, off, off + ret);
-
-    return ret;
+    return vnode->fs->vops.write(vnode, off, io);
 }
 
 /**

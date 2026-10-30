@@ -206,6 +206,8 @@ SYSCALL2(pipe2, int *, int)
 SYSCALL3(dup3, int, int, int)
 SYSCALL0(sched_yield)
 SYSCALL4(clock_nanosleep, int, int, const struct aquila_timespec *, struct aquila_timespec *)
+SYSCALL3(msync, void *, size_t, int)
+SYSCALL1(fsync, int)
 
 const syscall_t syscall_table[] = {
     [SYS_exit]          = sys_exit_entry,
@@ -314,6 +316,8 @@ const syscall_t syscall_table[] = {
     [SYS_dup3]          = sys_dup3_entry,
     [SYS_sched_yield]   = sys_sched_yield_entry,
     [SYS_clock_nanosleep] = sys_clock_nanosleep_entry,
+    [SYS_msync]         = sys_msync_entry,
+    [SYS_fsync]         = sys_fsync_entry,
 };
 
 const size_t syscall_cnt = sizeof(syscall_table)/sizeof(syscall_table[0]);

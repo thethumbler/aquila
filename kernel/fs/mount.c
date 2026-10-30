@@ -6,6 +6,7 @@
 #include <core/system.h>
 #include <core/string.h>
 #include <fs/vfs.h>
+#include <mm/vm.h>
 #include <fs/devfs.h>
 #include <dev/dev.h>
 #include <ds/queue.h>
@@ -65,6 +66,11 @@ int vfs_mount(const char *type, const char *dir, int flags, void *data, struct u
         err = path ? -ENAMETOOLONG : -ENOMEM;
     else
         err = fs->mount(covered, flags, data);
+
+    /* a filesystem on a disk: the page cache's flusher writes back what's
+     * written to its files through shared mappings */
+    if (err == 0 && fs->cached)
+        vm_cache_flusher_start();
 
     /* record the mount for /proc/mounts; with no memory for that, the
      * mount stays but isn't listed, and a name that couldn't be copied
@@ -155,5 +161,9 @@ int vfs_mount_root_dev(const char *name, const char *type)
     }
 
     printk("kernel: root is %s (%s)\n", name, type);
+
+    if (fs->cached)
+        vm_cache_flusher_start();
+
     return vfs_mount_root(root);
 }

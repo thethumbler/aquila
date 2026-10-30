@@ -339,9 +339,13 @@ int blkcache_flush(void)
     return err;
 }
 
-/** Writes the dirty blocks to the disk if the oldest one is old enough
- * (`DIRTY_AGE`). */
-static void flush_old(void)
+/**
+ * Writes the dirty blocks to the disk if the oldest one is old enough
+ * (`DIRTY_AGE`). The cache does it at its next use; the page cache's
+ * flusher, every second, so that a write reaches the disk in a few
+ * seconds even if nothing uses the disk after it.
+ */
+void blkcache_flush_old(void)
 {
     static int flushing;
 
@@ -374,7 +378,7 @@ ssize_t blkcache_read(void *owner, uint64_t sector, size_t count, void *buf,
     if (!count)
         return 0;
 
-    flush_old();
+    blkcache_flush_old();
     prefault(buf, count * SECTOR_SIZE, 1);
 
     for (uint64_t nr = sector / BLK_SECTORS; nr <= last; ) {
@@ -491,7 +495,7 @@ ssize_t blkcache_write(void *owner, uint64_t sector, size_t count, void *buf,
     if (!count)
         return 0;
 
-    flush_old();
+    blkcache_flush_old();
     prefault(buf, count * SECTOR_SIZE, 0);
 
     uint64_t last = (sector + count - 1) / BLK_SECTORS;

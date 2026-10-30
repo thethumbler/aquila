@@ -56,12 +56,14 @@ static ssize_t procfs_meminfo(off_t off, size_t size, char *buf)
             "MemTotal: %d kB\n"
             "MemFree: %d kB\n"
             "Cached: %d kB\n"
+            "Dirty: %d kB\n"
             "KVMemUsed: %d KB\n"
             "KVMemObjCnt: %d\n"
             "Slab: %d kB\n",
             (int) (k_total_mem/1024),
             (int) ((k_total_mem-k_used_mem)/1024),
             (int) (vm_cache_pages() * (PAGE_SIZE / 1024)),
+            (int) (vm_cache_dirty_pages() * (PAGE_SIZE / 1024)),
             (int) (kvmem_used/1024),
             (int) kvmem_obj_cnt,
             (int) (slab_used/1024)

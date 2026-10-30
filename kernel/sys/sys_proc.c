@@ -581,7 +581,9 @@ long sys_getgid(void)
  *               protection, flags, descriptor and offset
  * @param ret    where to put the mapping's address
  * @return 0, or a negative errno: `-EBADF`, `-EINVAL` (for an offset
- *         not on a page too), `-ENODEV`, `-ENOMEM`, `-EFAULT`
+ *         not on a page too), `-EACCES` for a writable shared mapping of
+ *         a file not open for reading and writing, `-ENODEV`, `-ENOMEM`,
+ *         `-EFAULT`
  */
 long sys_mmap(struct aquila_mmap_args *uargs, void **ret)
 {
@@ -619,9 +621,12 @@ long sys_mmap(struct aquila_mmap_args *uargs, void **ret)
      * not; another file (a device) is mapped by its driver */
     int regular = file && !ISDEV(file->vnode) && S_ISREG(file->vnode->mode);
 
-    /* a file's changes made through a mapping aren't written back yet */
-    if (regular && (args->flags & MAP_SHARED) && (args->prot & PROT_WRITE)) {
-        return -ENOSYS;
+    /* a file's shared mapping is written to the file: it must be open for
+     * reading and writing to be writable, now or later (mprotect()) */
+    int maywrite = regular && (args->flags & MAP_SHARED) && (file->flags & O_ACCMODE) == O_RDWR;
+
+    if (regular && (args->flags & MAP_SHARED) && (args->prot & PROT_WRITE) && !maywrite) {
+        return -EACCES;
     }
 
     if (!args->len) {
@@ -656,6 +661,7 @@ long sys_mmap(struct aquila_mmap_args *uargs, void **ret)
     vm_entry->flags |= args->prot & PROT_WRITE ? VM_UW : 0;
     vm_entry->flags |= args->prot & PROT_EXEC  ? VM_UX : 0;
     vm_entry->flags |= args->flags & MAP_SHARED ? VM_SHARED : 0;
+    vm_entry->flags |= maywrite ? VM_MAYWRITE : 0;
     vm_entry->off    = anon ? 0 : args->off;
 
     struct vm_space *vm_space = &curproc->vm_space;
@@ -764,8 +770,8 @@ long sys_munmap(void *addr, size_t len)
  * @return 0, or a negative errno: `-EINVAL` if the range doesn't start on
  *         a page, for another flag, or for part of the heap or the stack;
  *         `-ENOMEM` if a page of the range isn't mapped, or if there was no
- *         memory to split a mapping; `-EACCES` to make a file's shared
- *         mapping writable
+ *         memory to split a mapping; `-EACCES` to make writable a file's
+ *         shared mapping of a file not open for writing
  */
 long sys_mprotect(void *addr, size_t len, int prot)
 {
@@ -797,6 +803,43 @@ long sys_mprotect(void *addr, size_t len, int prot)
                     (prot & PROT_EXEC  ? VM_UX : 0);
 
     return vm_space_protect(&curproc->vm_space, start, end, perm);
+}
+
+/**
+ * Implements `msync()`: writes back the pages written to through the
+ * shared mappings of files in a range (the whole files: the page cache
+ * writes back by file); with `MS_SYNC`, the disks write out their caches
+ * too. A private mapping's pages are its own: there is nothing to write.
+ *
+ * @param addr   the range's start, on a page
+ * @param len    its length
+ * @param flags  `MS_SYNC` or `MS_ASYNC` (`MS_INVALIDATE` too, which does
+ *               nothing)
+ * @return 0, or a negative errno: `-EINVAL` for a start not on a page or
+ *         bad flags, `-ENOMEM` if a page of the range isn't mapped, or a
+ *         write's error
+ */
+long sys_msync(void *addr, size_t len, int flags)
+{
+    syscall_log(LOG_DEBUG, "msync(addr=%p, len=%d, flags=%x)\n", addr, len, flags);
+
+    vaddr_t start = (vaddr_t) addr;
+
+    if ((start & PAGE_MASK) || (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC)) ||
+        ((flags & MS_ASYNC) && (flags & MS_SYNC))) {
+        return -EINVAL;
+    }
+
+    if (uaccess_check(addr, len)) {
+        return -ENOMEM;
+    }
+
+    int err = vm_space_msync(&curproc->vm_space, start, start + PAGE_ROUND(len));
+
+    if (!err && (flags & MS_SYNC))
+        err = kdev_sync();
+
+    return err;
 }
 
 /**

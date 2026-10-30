@@ -13,17 +13,27 @@
  * tables of the processes that map it first: the file's vm object knows
  * its mappings (`vm_object_page_unmap()`).
  *
- * Writes go to the filesystem, which writes them through the disks'
- * block cache, and the cached pages are read again from it
- * (`vnode_pages_update()`).
+ * `write()` goes to the filesystem, which writes through the disks' block
+ * cache, and the bytes written are read again into the cached pages
+ * (`vnode_pages_update()`). A page written to through a shared mapping is
+ * dirty (`vm_cache_page_dirty()`): it is written back to the file by
+ * `msync()`, `fsync()` and `sync()`, and by the flusher, a kernel thread,
+ * once it has been dirty for a few seconds. The page is made read only in
+ * every mapping first, so that a write after that makes it dirty again.
+ * A dirty page isn't taken back for its memory: the flusher cleans it.
  */
 
 #include <core/system.h>
 #include <core/string.h>
+#include <core/arch.h>
 #include <fs/vfs.h>
 #include <fs/iobuf.h>
 #include <mm/vm.h>
 #include <mm/pmap.h>
+#include <dev/blkcache.h>
+#include <sys/sched.h>
+#include <sys/proc.h>
+#include <sys/kthread.h>
 
 static struct vm_pager vnode_pager;
 
@@ -37,6 +47,21 @@ static struct list lru;
 /* how much is copied out of a page at a time, through the stack (see
  * vm_cache_read()) */
 #define CHUNK       512
+
+/* the objects that have dirty pages, the one dirty the longest first, and
+ * how many dirty pages there are */
+static struct list dirty_objects;
+static size_t dirty_pages;
+
+/* how long a page stays dirty before the flusher writes it back, and how
+ * often the flusher looks: the disks' block cache's own delay, 5 s */
+#define DIRTY_AGE       5000000000ULL
+#define FLUSHER_PERIOD  1000000000ULL
+
+/* the flusher's thread, once it is started */
+static struct thread *flusher;
+
+static int flush_objects(int old);
 
 /** Says whether a cached page is the one at the offset `_b` points to. */
 static int vm_page_eq(void *_a, void *_b)
@@ -296,8 +321,9 @@ size_t vm_cache_reclaim(size_t want)
         struct vm_page *vm_page = list_entry(node, struct vm_page, lru);
         struct vm_object *vm_object = vm_page->vm_object;
 
-        /* a fault is mapping it */
-        if (vm_page->pin)
+        /* a fault is mapping it, or it has to be written back first (the
+         * flusher does that: writing would need memory) */
+        if (vm_page->pin || vm_page->dirty)
             continue;
 
         /* mapped: out of the page tables first, a process that touches
@@ -331,11 +357,23 @@ size_t vm_cache_pages(void)
 }
 
 /**
+ * Says how many pages of the page cache are dirty, for `/proc/meminfo`.
+ *
+ * @return the number of pages written to through shared mappings, and not
+ *         written back yet
+ */
+size_t vm_cache_dirty_pages(void)
+{
+    return dirty_pages;
+}
+
+/**
  * Reads a file's cached pages again after a write or a truncation changed
- * a range of it. A page stays where it is, mapped by every process that
- * maps the file, so its contents change but not the page; past the
- * file's end it reads zeros. A private mapping's copies, made when it
- * wrote to a page, are its own and don't change.
+ * a range of it: the bytes of the range only, so that a page written to
+ * through a shared mapping keeps the rest. A page stays where it is,
+ * mapped by every process that maps the file, so its contents change but
+ * not the page; past the file's end it reads zeros. A private mapping's
+ * copies, made when it wrote to a page, are its own and don't change.
  *
  * @param vnode  the file
  * @param start  the start of the range that changed
@@ -353,8 +391,8 @@ void vnode_pages_update(struct vnode *vnode, off_t start, off_t end)
     /* each page is looked up after it is read, rather than the map walked:
      * the read may sleep, and meanwhile the page may be read in, or taken
      * back for its memory */
-    for (size_t off = PAGE_ALIGN((size_t) start); off < (size_t) end; off += PAGE_SIZE) {
-        if (!page_lookup(vm_object, off))
+    for (size_t page = PAGE_ALIGN((size_t) start); page < (size_t) end; page += PAGE_SIZE) {
+        if (!page_lookup(vm_object, page))
             continue;
 
         if (!buf && !(buf = kmalloc(PAGE_SIZE, &M_BUFFER, 0))) {
@@ -362,18 +400,241 @@ void vnode_pages_update(struct vnode *vnode, off_t start, off_t end)
             return;
         }
 
-        memset(buf, 0, PAGE_SIZE);
+        size_t from = MAX(page, (size_t) start), to = MIN(page + PAGE_SIZE, (size_t) end);
 
-        if (file_read(vnode, off, PAGE_SIZE, buf) < 0)
+        memset(buf, 0, to - from);
+
+        if (file_read(vnode, from, to - from, buf) < 0)
             continue;
 
-        struct vm_page *vm_page = page_lookup(vm_object, off);
+        struct vm_page *vm_page = page_lookup(vm_object, page);
 
         if (vm_page)
-            pmap_page_write(vm_page->paddr, 0, PAGE_SIZE, buf);
+            pmap_page_write(vm_page->paddr, from - page, to - from, buf);
     }
 
     kfree(buf);
+}
+
+/**
+ * Marks a file's page dirty: written to through a shared mapping, to be
+ * written back to the file. The page fault handler calls it.
+ *
+ * @param vm_object  the file's vm object
+ * @param vm_page    the page
+ */
+void vm_cache_page_dirty(struct vm_object *vm_object, struct vm_page *vm_page)
+{
+    if (vm_page->dirty)
+        return;
+
+    vm_page->dirty = 1;
+    dirty_pages++;
+
+    if (!vm_object->ndirty++) {
+        vm_object->dirty_since = arch_rtime_ns();
+        list_append(&dirty_objects, &vm_object->dirty_link);
+    }
+}
+
+/**
+ * Holds back a process that writes through a shared mapping, when too
+ * many pages are dirty: an eighth of the memory. The pages are written
+ * back first: they can't be taken back for their memory while they are
+ * dirty, and the flusher, every second, may not be in time. The page
+ * fault handler calls it before a page is made dirty (it may sleep: the
+ * fault may already, to read a page in).
+ */
+void vm_cache_dirty_throttle(void)
+{
+    extern size_t k_total_mem;
+
+    if (dirty_pages > k_total_mem / PAGE_SIZE / 8)
+        flush_objects(0);
+}
+
+/** Marks a page clean. */
+static void page_clean(struct vm_object *vm_object, struct vm_page *vm_page)
+{
+    if (!vm_page->dirty)
+        return;
+
+    vm_page->dirty = 0;
+    dirty_pages--;
+
+    if (!--vm_object->ndirty)
+        list_remove(&vm_object->dirty_link);
+}
+
+/**
+ * Writes a dirty page back to its file, as much of it as is in the file
+ * (a page past the end is only made clean). It is made read only in every
+ * mapping, and clean, before it is copied: a write after that faults, and
+ * makes it dirty again, for the next write back.
+ *
+ * @return 0, or a negative errno (the page is dirty again if there was no
+ *         memory; after a write error, it is lost, as Linux does)
+ */
+static int page_out(struct vm_object *vm_object, struct vm_page *vm_page)
+{
+    struct vnode *vnode = (struct vnode *) vm_object->p;
+
+    /* the buffer first: getting it may take memory back from the page
+     * cache, which doesn't take a dirty page */
+    char *buf = kmalloc(PAGE_SIZE, &M_BUFFER, 0);
+
+    if (!buf)
+        return -ENOMEM;
+
+    vm_object_page_protect(vm_object, vm_page);
+    page_clean(vm_object, vm_page);
+
+    size_t off = vm_page->off;
+
+    if (off >= vnode->size) {
+        kfree(buf);
+        return 0;
+    }
+
+    size_t len = MIN(PAGE_SIZE, vnode->size - off);
+    pmap_page_read(vm_page->paddr, 0, len, buf);
+
+    /* the page may be taken back while the write sleeps: it is clean, and
+     * isn't used anymore */
+    struct iobuf io;
+    iobuf_init(&io, buf, len, 0);
+    ssize_t r = vfs_write_raw(vnode, off, &io);
+    kfree(buf);
+
+    if (r < 0) {
+        printk("vm: a page of a file couldn't be written back: error %d\n", (int) -r);
+        return r;
+    }
+
+    return 0;
+}
+
+/**
+ * Writes back a vm object's dirty pages. Their offsets are found first:
+ * writing sleeps, and meanwhile pages may come and go.
+ *
+ * @return 0, or the first error
+ */
+static int object_flush(struct vm_object *vm_object)
+{
+    size_t n = vm_object->ndirty, k = 0;
+
+    if (!n)
+        return 0;
+
+    size_t *offs = kmalloc(n * sizeof(size_t), &M_BUFFER, 0);
+
+    if (!offs)
+        return -ENOMEM;
+
+    hashmap_for (qnode, vm_object->pages) {
+        struct hashmap_node *node = (struct hashmap_node *) qnode->value;
+        struct vm_page *vm_page = (struct vm_page *) node->entry;
+
+        if (vm_page->dirty && k < n)
+            offs[k++] = vm_page->off;
+    }
+
+    int err = 0;
+
+    for (size_t i = 0; i < k; ++i) {
+        struct vm_page *vm_page = page_lookup(vm_object, offs[i]);
+        int e;
+
+        if (vm_page && vm_page->dirty && (e = page_out(vm_object, vm_page)) && !err)
+            err = e;
+    }
+
+    kfree(offs);
+    return err;
+}
+
+/** Writes back the dirty pages of every file, or, with `old`, of the files
+ * dirty for longer than `DIRTY_AGE`. Returns 0, or the first error. */
+static int flush_objects(int old)
+{
+    uint64_t now = arch_rtime_ns();
+    size_t n = dirty_objects.count;
+    int err = 0;
+
+    /* each one once: it goes to the end of the list, where it may stay if
+     * it's written to again meanwhile */
+    while (n-- && !list_empty(&dirty_objects)) {
+        struct vm_object *vm_object = list_entry(dirty_objects.head, struct vm_object, dirty_link);
+
+        if (old && now - vm_object->dirty_since < DIRTY_AGE)
+            break;
+
+        list_remove(&vm_object->dirty_link);
+        list_append(&dirty_objects, &vm_object->dirty_link);
+
+        /* the vnode, and its object, stay while the pages are written */
+        struct vnode *vnode = (struct vnode *) vm_object->p;
+        vnode->ref++;
+
+        int e = object_flush(vm_object);
+
+        if (e && !err)
+            err = e;
+
+        vfs_close(vnode);
+    }
+
+    return err;
+}
+
+/**
+ * Writes back a file's dirty pages, for `fsync()` and `msync()`.
+ *
+ * @param vnode  the file
+ * @return 0, or a negative errno
+ */
+int vm_cache_flush(struct vnode *vnode)
+{
+    if (!vnode->vm_object || !vnode->vm_object->ndirty)
+        return 0;
+
+    vnode->ref++;
+    int err = object_flush(vnode->vm_object);
+    vfs_close(vnode);
+
+    return err;
+}
+
+/**
+ * Writes back every file's dirty pages, for `sync()`.
+ *
+ * @return 0, or the first error
+ */
+int vm_cache_flush_all(void)
+{
+    return flush_objects(0);
+}
+
+/** The flusher: every second, writes back the pages dirty for longer than
+ * `DIRTY_AGE`, and has the disks' block cache write its own old blocks
+ * (it would wait for its next use otherwise). */
+static void flusher_main(void *arg __unused)
+{
+    for (;;) {
+        sched_sleep(arch_rtime_ns() + FLUSHER_PERIOD);
+        flush_objects(1);
+        blkcache_flush_old();
+    }
+}
+
+/**
+ * Starts the flusher, the first time a filesystem on a disk is mounted.
+ */
+void vm_cache_flusher_start(void)
+{
+    if (!flusher && kthread_create("flusher", flusher_main, NULL, &flusher))
+        printk("vm: can't make the flusher's thread: dirty pages are written back on sync only\n");
 }
 
 /**
@@ -398,6 +659,9 @@ void vnode_pages_free(struct vnode *vnode)
         mm_page_dealloc(vm_page->paddr);
     }
 
+    /* the file is gone: what wasn't written back of it is too */
+    list_remove(&vm_object->dirty_link);
+    dirty_pages -= vm_object->ndirty;
     hashmap_free(vm_object->pages);
     kfree(vm_object);
     vnode->vm_object = NULL;

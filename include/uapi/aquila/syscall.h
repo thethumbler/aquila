@@ -125,8 +125,10 @@
 #define SYS_dup3            106
 #define SYS_sched_yield     107
 #define SYS_clock_nanosleep 108
+#define SYS_msync           109
+#define SYS_fsync           110
 
-#define SYS_MAX             108
+#define SYS_MAX             110
 
 /*
  * Arguments of the older system calls that take more than three, passed

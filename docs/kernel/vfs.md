@@ -306,15 +306,43 @@ serve every use of the file:
   handler, see [Memory](memory.md)). Private mappings (`MAP_PRIVATE`, and
   a program's segments) get a copy of a page when they write to it. A
   shared mapping (`MAP_SHARED`) of a regular file maps the same pages, and
-  can't be written to yet; a device's shared mapping is its driver's (the
-  framebuffer's, through the filesystem's `map` operation).
+  what it writes goes back to the file (below); a device's shared mapping
+  is its driver's (the framebuffer's, through the filesystem's `map`
+  operation).
 
 Other files (tmpfs's, procfs's, the initramfs's) are read through their
 filesystem each time: they are in memory already, or made up when read.
 
-Writes go to the filesystem, as before (below); the pages a write or a
-truncation changed are read again from it (`vnode_pages_update()`), so
-every process that maps them sees the change.
+`write()` goes to the filesystem, as before (below); the bytes a write or
+a truncation changed are read again from it into the cached pages
+(`vnode_pages_update()`), so every process that maps them sees the
+change.
+
+A shared mapping writes to the file's pages themselves, and they go back
+to the file later:
+
+- **Dirty pages.** A page is mapped read only at first, even in a
+  writable mapping. The first write faults, marks the page dirty
+  (`vm_cache_page_dirty()`, counted in `/proc/meminfo`'s `Dirty`) and maps
+  it writable. The hardware's dirty bits aren't used: aarch64 has none
+  without an extension, and a fault is the same on every machine.
+- **Writing back.** A dirty page is made read only in every mapping (the
+  reverse map, `vm_object_page_protect()`) and clean, then written to the
+  file through the filesystem (`vfs_write_raw()`, which doesn't read it
+  back): a write after that faults and makes it dirty again. Pages are
+  written back by `msync()`, `fsync()` and `sync()`, and by the
+  **flusher**, a kernel thread started with the first disk filesystem
+  mounted: every second, it writes back the pages dirty for more than
+  5 s, and has the block cache write its own old blocks (which it
+  otherwise did only at its next use).
+- **Holding writers back.** A dirty page isn't taken back for its memory,
+  and writing it would need memory. When more than an eighth of the
+  memory is dirty, a write fault writes the dirty pages back first
+  (`vm_cache_dirty_throttle()`), as Linux's `balance_dirty_pages()` does.
+- A mapping writable is open for writing: `mmap(PROT_WRITE, MAP_SHARED)`
+  of a file not open for reading and writing fails (`EACCES`), and
+  `mprotect()` can't make such a mapping writable (`VM_MAYWRITE`). A page
+  past the end of the file isn't written back.
 
 The pages stay as long as there is memory for them. Every cached page is
 on one list, the page used least recently first. When the buddy allocator
@@ -360,10 +388,11 @@ number: minix keeps its indirect zone tables in one.)
 - No `umount`, no `fsync()`, no record locks, no shared file mappings.
 - Vnode caches don't shrink: a disk file's vnode stays until it's
   removed.
-- The page cache doesn't write: file data goes to the filesystem at once
-  (and to the disk later, from the block cache), so it is in both caches
-  for a while. Writing pages back from the page cache would be the step
-  to shared writable file mappings.
+- `write()` doesn't go through the page cache: its data goes to the
+  filesystem at once (and to the disk later, from the block cache), so it
+  is in both caches for a while.
+- Write back is by whole file: `msync()` writes back every dirty page of
+  the files it covers, and `fsync()` has every disk write out its cache.
 - The kernel runs with interrupts off and one CPU in it at a time (see
   [SMP and the kernel lock](smp.md)), so none of these structures has a
   lock of its own; a thread that sleeps (on a disk read, on a pipe) must

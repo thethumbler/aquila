@@ -99,6 +99,30 @@ void vm_object_page_unmap(struct vm_object *vm_object, struct vm_page *vm_page)
 }
 
 /**
+ * Makes a page of a vm object read only in the page tables that map it,
+ * once it is written back to its file: the next write to it, through any
+ * mapping, faults, and makes it dirty again (`vm_cache_page_dirty()`).
+ *
+ * @param vm_object  the object
+ * @param vm_page    its page
+ */
+void vm_object_page_protect(struct vm_object *vm_object, struct vm_page *vm_page)
+{
+    list_for (node, &vm_object->mappings) {
+        struct vm_entry *vm_entry = list_entry(node, struct vm_entry, obj_link);
+
+        if (vm_page->off < vm_entry->off || vm_page->off - vm_entry->off >= vm_entry->size)
+            continue;
+
+        struct pmap *pmap = vm_entry->vm_space->pmap;
+        vaddr_t vaddr = vm_entry->base + (vm_page->off - vm_entry->off);
+
+        if (PAGE_ALIGN(arch_page_get_mapping(pmap, vaddr)) == vm_page->paddr)
+            pmap_protect(pmap, vaddr, vaddr + PAGE_SIZE, (vm_entry->flags & VM_PERM) & ~(VM_UW | VM_KW));
+    }
+}
+
+/**
  * Adds a page to a vm object, at the page's offset (`vm_page->off`).
  *
  * @param vm_object  the object

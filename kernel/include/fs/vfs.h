@@ -235,6 +235,7 @@ int     vfs_map(struct vm_space *vm_space, struct vm_entry *vm_entry);
 ssize_t vfs_read_io(struct vnode *vnode, off_t offset, struct iobuf *io);
 ssize_t vfs_read_raw(struct vnode *vnode, off_t offset, struct iobuf *io);
 ssize_t vfs_write_io(struct vnode *vnode, off_t offset, struct iobuf *io);
+ssize_t vfs_write_raw(struct vnode *vnode, off_t offset, struct iobuf *io);
 
 /* The kernel's own reads and writes, with a kernel buffer */
 ssize_t vfs_read(struct vnode *vnode, off_t offset, size_t size, void *buf);
