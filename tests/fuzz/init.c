@@ -485,6 +485,8 @@ static const struct call calls[] = {
     {SYS_dup3,          {A_FD, A_FD, A_FLAGS}},
     {SYS_sched_yield},
     {SYS_clock_nanosleep, {A_INT, A_INT, A_STRUCT, A_PTR}},
+    {SYS_msync,         {A_PAGE, A_LEN, A_INT}},
+    {SYS_fsync,         {A_FD}},
     {0,                 {A_ANY, A_ANY, A_ANY, A_ANY, A_ANY}},   /* any number */
 };
 

@@ -17,7 +17,9 @@
  * Booted with fscache.pressure, in less memory than the file it maps: a
  * 96 MiB file mapped and read through, by two processes at once, and
  * shared; the page cache takes back mapped pages, out of each process's
- * page tables, and a page a process wrote to (its own copy) stays.
+ * page tables, and a page a process wrote to (its own copy) stays. Then
+ * every page written to through a shared mapping, more than the memory:
+ * the writer is held back while dirty pages are written back.
  */
 
 #include "../lib/aqtest.h"
@@ -238,8 +240,26 @@ static void pressure(void)
     /* a shared mapping, read only, reads the same */
     volatile u32 *sh = map(fd, PRESSURE_SIZE, PROT_READ, MAP_SHARED, 0);
     check("pressure: a shared mapping, read only", sh != 0 && mapped_right(sh), 1);
-    check("pressure: a shared mapping can't be written yet",
-          map(fd, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, 0) == 0, 1);
+    SC(SYS_munmap, sh, PRESSURE_SIZE, 0);
+
+    /* every page written to through a shared mapping, more than the
+     * memory; then the file has it */
+    volatile u32 *w = map(fd, PRESSURE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, 0);
+    check("pressure: a writable shared mapping", w != 0, 1);
+
+    for (unsigned long page = 0; page < PRESSURE_SIZE / 4096; ++page)
+        w[page * (4096 / sizeof(u32)) + 1] = ~page;
+
+    check("pressure: written through, written back", SC(SYS_msync, w, PRESSURE_SIZE, MS_SYNC), 0);
+    SC(SYS_munmap, w, PRESSURE_SIZE, 0);
+
+    int ok = 1;
+    for (unsigned long page = 0; page < PRESSURE_SIZE / 4096 && ok; page += 97) {
+        u32 two[2] = {0, 0};
+        SC5(SYS_pread, fd, two, sizeof(two), page * 4096, 0);
+        ok = two[0] == page && two[1] == (u32) ~page;
+    }
+    check("pressure: read() sees what the shared mapping wrote", ok, 1);
 
     /* the copy stays the process's; the file has what was written */
     u32 word = 0;

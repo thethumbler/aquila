@@ -1286,6 +1286,23 @@ static void test_posix_calls(void)
 
     check("sched_yield", sched_yield(), 0);
 
+    /* msync() and fsync() */
+    char *am = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    check("msync of private memory", msync(am, 4096, MS_SYNC), 0);
+    errno = 0;
+    check("msync bad flags -> EINVAL", msync(am, 4096, MS_SYNC | MS_ASYNC) == -1 ? errno : 0, EINVAL);
+    munmap(am, 4096);
+    f = open("/tmp/fs", O_CREAT | O_RDWR, 0644);
+    check("fsync", fsync(f), 0);
+    check("fdatasync", fdatasync(f), 0);
+    close(f);
+    unlink("/tmp/fs");
+    pipe(p);
+    errno = 0;
+    check("fsync of a pipe -> EINVAL", fsync(p[0]) == -1 ? errno : 0, EINVAL);
+    close(p[0]);
+    close(p[1]);
+
     /* clock_nanosleep() returns the error, errno stays */
     struct timespec ts = {0, 20000000}, t0, t1;
     errno = 0;

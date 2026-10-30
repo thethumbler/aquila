@@ -10,8 +10,11 @@
  * no partition table: its first partition isn't there (it isn't the whole
  * disk). Then the page cache: what reads see after writes, truncations
  * and mappings, two processes reading a file, an inode reused after its
- * file was unlinked, a program run from where it was just copied.
- * tests/run.sh then checks the image on the host with
+ * file was unlinked, a program run from where it was just copied. Then
+ * shared writable mappings: two processes writing to one, written back by
+ * msync() and by the flusher, writes after a write back caught again,
+ * write() over a page written through a mapping (/shared, which the host
+ * checks). tests/run.sh then checks the image on the host with
  * e2fsck, compares the file contents with the same pattern and lists
  * what is left.
  */
@@ -253,6 +256,90 @@ static void page_cache(void)
     SC(SYS_unlink, "/mnt/pc", 0, 0);
 }
 
+/* maps `len` bytes of `fd` at `off`, or returns NULL */
+static volatile char *map(int fd, unsigned long len, int prot, int flags, unsigned long off)
+{
+    void *p = 0;
+    struct aquila_mmap_args a = {0, len, prot, flags, fd, off};
+    return SC(SYS_mmap, &a, &p, 0) ? 0 : p;
+}
+
+static void copy(volatile char *to, const char *from)
+{
+    while (*from)
+        *to++ = *from++;
+}
+
+static int same(volatile char *a, const char *b)
+{
+    while (*b)
+        if (*a++ != *b++)
+            return 0;
+    return 1;
+}
+
+/* shared writable mappings, written back to the file */
+static void shared_mappings(void)
+{
+    int fd = SC(SYS_open, "/mnt/shared", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    fill(fd, 0, 2 * 4096, 'a');
+
+    /* a file open read only can't be mapped writable, or made so */
+    int ro = SC(SYS_open, "/mnt/shared", O_RDONLY, 0);
+    check("shared: writable, of a file open read only", map(ro, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, 0) == 0, 1);
+    volatile char *r = map(ro, 4096, PROT_READ, MAP_SHARED, 0);
+    check("shared: made writable, of a file open read only",
+          SC(SYS_mprotect, r, 4096, PROT_READ | PROT_WRITE), -EACCES);
+    SC(SYS_munmap, r, 4096, 0);
+    SC(SYS_close, ro, 0, 0);
+
+    /* two processes write to one mapping: each sees the other's writes,
+     * and so does read() */
+    volatile char *m = map(fd, 2 * 4096, PROT_READ | PROT_WRITE, MAP_SHARED, 0);
+    check("shared: a writable shared mapping", m != 0, 1);
+
+    int pid = SC(SYS_fork, 0, 0, 0);
+    if (!pid) {
+        copy(m + 100, "child");
+        SC(SYS_exit, 0, 0, 0);
+    }
+    int ws;
+    SC(SYS_waitpid, pid, &ws, 0);
+    char b[8] = {0};
+    SC5(SYS_pread, fd, b, 5, 100, 0);
+    check("shared: a child's write seen by the parent, and by read()", same(m + 100, "child") && same(b, "child"), 1);
+    check("shared: dirty", meminfo("Dirty: ") > 0, 1);
+
+    /* msync writes it back */
+    check("shared: msync bad flags", SC(SYS_msync, m, 4096, MS_SYNC | MS_ASYNC), -EINVAL);
+    check("shared: msync not on a page", SC(SYS_msync, m + 1, 4096, MS_SYNC), -EINVAL);
+    check("shared: msync", SC(SYS_msync, m, 2 * 4096, MS_SYNC), 0);
+    check("shared: clean after msync", meminfo("Dirty: "), 0);
+
+    /* a write after that is caught, and written back by the flusher
+     * within a few seconds */
+    copy(m + 4096 + 50, "parent");
+    check("shared: a write after the write back, dirty again", meminfo("Dirty: ") > 0, 1);
+    struct aquila_timespec ts = {8, 0};
+    SC(SYS_nanosleep, &ts, 0, 0);
+    check("shared: the flusher wrote it back", meminfo("Dirty: "), 0);
+
+    /* write() over a page written through the mapping: both kept */
+    copy(m + 200, "map");
+    SC5(SYS_pwrite, fd, "write", 5, 300, 0);
+    check("shared: write() and the mapping's writes, in the page", same(m + 200, "map") && same(m + 300, "write"), 1);
+
+    SC(SYS_munmap, m, 2 * 4096, 0);
+    check("shared: fsync", SC(SYS_fsync, fd, 0, 0), 0);
+    SC(SYS_close, fd, 0, 0);
+
+    int p[2];
+    SC(SYS_pipe, p, 0, 0);
+    check("shared: fsync of a pipe", SC(SYS_fsync, p[0], 0, 0), -EINVAL);
+    SC(SYS_close, p[0], 0, 0);
+    SC(SYS_close, p[1], 0, 0);
+}
+
 void aq_main(void)
 {
     struct { char *dev, *opt; } args = {"/dev/hda", 0};
@@ -437,6 +524,7 @@ void aq_main(void)
     SC(SYS_close, fd, 0, 0);
 
     page_cache();
+    shared_mappings();
 
     /* the disk has what was written (the host checks it) */
     check("sync", SC(SYS_sync, 0, 0, 0), 0);

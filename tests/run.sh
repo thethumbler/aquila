@@ -789,10 +789,26 @@ if data != want:
     sys.exit(1)
 EOF
 
+    # what shared mappings wrote, written back: /shared is two pages of
+    # 'a' with "child" at 100, "map" at 200, "write" at 300 (written over
+    # the mapping's page), "parent" at 4096 + 50
+    debugfs -R "dump /shared $OUT/ext2/shared.out" "$img" >/dev/null 2>&1
+    python3 -I - "$OUT/ext2/shared.out" <<'EOF' || return 1
+import sys
+data = open(sys.argv[1], 'rb').read()
+want = bytearray(b'a' * 8192)
+for off, s in ((100, b'child'), (200, b'map'), (300, b'write'), (4096 + 50, b'parent')):
+    want[off:off + len(s)] = s
+if data != bytes(want):
+    bad = next((i for i in range(min(len(data), len(want))) if data[i] != want[i]), None)
+    print("/shared differs on the host: size %d, first mismatch at %s" % (len(data), bad))
+    sys.exit(1)
+EOF
+
     # what the test left: removed, renamed and unlinked-while-open files gone
     local names
     names=$(debugfs -R "ls /" "$img" 2>/dev/null | tr -s ' ' '\n' | grep -v '^[0-9(]' | sort | xargs)
-    if [ "$names" != ". .. a b big devnode huge lost+found sym trunc" ]; then
+    if [ "$names" != ". .. a b big devnode huge lost+found shared sym trunc" ]; then
         echo "unexpected files on the image: $names"
         return 1
     fi
