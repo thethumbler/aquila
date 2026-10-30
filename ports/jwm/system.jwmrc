@@ -8,6 +8,7 @@
 <JWM>
     <Include>exec:aquila-theme jwm</Include>
 
+    <!-- the desktop's right button menu: root:3 to JWM -->
     <RootMenu onroot="3" height="0">
         <Program icon="aquila.xpm" label="Terminal">aquila-theme term</Program>
         <Program label="XTerm">xterm</Program>
@@ -29,7 +30,7 @@
     </Group>
 
     <Tray x="0" y="-1" height="36" autohide="off">
-        <TrayButton icon="aquila.xpm" label="AquilaOS">root:1</TrayButton>
+        <TrayButton icon="aquila.xpm" label="AquilaOS">root:3</TrayButton>
         <Spacer width="6"/>
         <Pager labeled="false"/>
         <Spacer width="6"/>
@@ -60,7 +61,7 @@
     <Key mask="A" key="Tab">nextstacked</Key>
     <Key mask="A" key="F4">close</Key>
     <Key mask="A" key="#">desktop#</Key>
-    <Key mask="A" key="F1">root:1</Key>
+    <Key mask="A" key="F1">root:3</Key>
     <Key mask="A" key="F2">window</Key>
     <Key mask="A" key="F10">maximize</Key>
     <Key mask="A" key="Right">rdesktop</Key>
