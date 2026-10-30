@@ -457,6 +457,7 @@ static const struct call calls[] = {
     {SYS_thread_detach, {A_INT}},
     {SYS_sigtimedwait,  {A_STRUCT, A_PTR, A_STRUCT}},
     {SYS_sigpending,    {A_PTR}},
+    {SYS_sigaltstack,   {A_STRUCT, A_PTR}},
     {0,                 {A_ANY, A_ANY, A_ANY, A_ANY, A_ANY}},   /* any number */
 };
 

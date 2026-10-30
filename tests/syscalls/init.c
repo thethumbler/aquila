@@ -52,6 +52,7 @@
 #include <aquila/vt.h>
 #include <aquila/keyboard.h>
 #include <aquila/time.h>
+#include <aquila/ucontext.h>
 
 static volatile int got_sig = 0;
 static void handler(int sig) { got_sig = sig; }
@@ -689,23 +690,24 @@ static int sse_fork(void)
     return r;
 }
 
-/* the kernel's struct sigframe (arch/i386/sys/signal.c) */
-struct test_regs {
-#ifdef __x86_64__
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8, rdi, rsi, rbp, rbx, rcx, rdx, rax,
-             vec, err, ip, cs, flags, sp, ss;
-#else
-    uint32_t edi, esi, ebp, ebx, ecx, edx, eax, gs, fs, es, ds, vec, err, ip, cs, flags, sp, ss;
-#endif
-};
-
+/* the kernel's struct sigframe (arch/i386/sys/signal.c): the registers
+ * are the ucontext's, which has no segments */
 struct test_frame {
     struct aquila_siginfo info;
-    unsigned long mask;
+    struct aquila_ucontext uc;
     uint32_t fpu;
-    struct test_regs regs;
     uint8_t fxsave[512] __attribute__((aligned(16)));
 } __attribute__((aligned(16)));
+
+#ifdef __x86_64__
+#define MC_IP(mc)       ((mc).rip)
+#define MC_SP(mc)       ((mc).rsp)
+#define MC_FLAGS(mc)    ((mc).rflags)
+#else
+#define MC_IP(mc)       ((mc).eip)
+#define MC_SP(mc)       ((mc).esp)
+#define MC_FLAGS(mc)    ((mc).eflags)
+#endif
 
 static struct test_frame forged;
 static char landing_stack[4096] __attribute__((aligned(16)));
@@ -747,14 +749,11 @@ static void __attribute__((noreturn)) sigreturn_at(uptr frame)
 
 static void forged_sigreturn(void)
 {
-    forged.regs.ip = (uptr) landing;
-    forged.regs.sp = (uptr) landing_stack + sizeof(landing_stack) - sizeof(uptr);
-    forged.regs.cs = 0x08;                          /* the kernel's */
-    forged.regs.ss = 0x10;
-    forged.regs.flags = 0x3000 | 0x4000 | 0x2;      /* IOPL 3, NT, no IF */
+    MC_IP(forged.uc.uc_mcontext) = (uptr) landing;
+    MC_SP(forged.uc.uc_mcontext) = (uptr) landing_stack + sizeof(landing_stack) - sizeof(uptr);
+    MC_FLAGS(forged.uc.uc_mcontext) = 0x3000 | 0x4000 | 0x2;    /* IOPL 3, NT, no IF */
 #ifndef __x86_64__
-    forged.regs.flags |= 0x20000;                   /* virtual 8086 */
-    forged.regs.ds = forged.regs.es = forged.regs.fs = forged.regs.gs = 0x10;
+    MC_FLAGS(forged.uc.uc_mcontext) |= 0x20000;                 /* virtual 8086 */
 #endif
     sigreturn_at((uptr) &forged);
 }
@@ -769,9 +768,9 @@ static void forged_sigreturn(void)
 /* a frame as a handler's return finds it, but returning past user space */
 static void past_user_sigreturn(void)
 {
-    forged.regs.ip = PAST_USER;
-    forged.regs.sp = (uptr) landing_stack + sizeof(landing_stack) - sizeof(uptr);
-    forged.regs.flags = 0x202;
+    MC_IP(forged.uc.uc_mcontext) = PAST_USER;
+    MC_SP(forged.uc.uc_mcontext) = (uptr) landing_stack + sizeof(landing_stack) - sizeof(uptr);
+    MC_FLAGS(forged.uc.uc_mcontext) = 0x202;
     sigreturn_at((uptr) &forged);
 }
 
@@ -1819,6 +1818,20 @@ void aq_main(void)
     wts.tv_nsec = 1000000000;
     check("sigtimedwait bad nsec", SC(SYS_sigtimedwait, &wset, 0, &wts), -EINVAL);
     check("sigpending kaddr", SC(SYS_sigpending, KADDR, 0, 0), -EFAULT);
+    struct aquila_stack ass = {(uptr) &tstack[0], 0, 4096}, aold;
+    check("sigaltstack ss kaddr", SC(SYS_sigaltstack, KADDR, 0, 0), -EFAULT);
+    check("sigaltstack oss kaddr", SC(SYS_sigaltstack, 0, KADDR, 0), -EFAULT);
+    check("sigaltstack none", SC(SYS_sigaltstack, 0, &aold, 0) == 0 && aold.ss_flags == SS_DISABLE, 1);
+    ass.ss_flags = 4;
+    check("sigaltstack bad flags", SC(SYS_sigaltstack, &ass, 0, 0), -EINVAL);
+    ass.ss_flags = 0;
+    ass.ss_size = 100;
+    check("sigaltstack too small", SC(SYS_sigaltstack, &ass, 0, 0), -ENOMEM);
+    ass.ss_size = 4096;
+    check("sigaltstack set and read", SC(SYS_sigaltstack, &ass, 0, 0) == 0 &&
+          SC(SYS_sigaltstack, 0, &aold, 0) == 0 && aold.ss_sp == ass.ss_sp && aold.ss_flags == 0, 1);
+    ass.ss_flags = SS_DISABLE;
+    SC(SYS_sigaltstack, &ass, 0, 0);
 
     /* sockets */
     int s = SC(SYS_socket, AF_UNIX, SOCK_STREAM, 0);

@@ -20,6 +20,7 @@
 #include <aquila/utsname.h>
 #include <aquila/in.h>
 #include <aquila/socket.h>
+#include <aquila/ucontext.h>
 
 static int eq(const char *a, const char *b, int n)
 {
@@ -35,6 +36,35 @@ static volatile int got_signal, cow;
 static void handler(int sig)
 {
     got_signal = sig;
+}
+
+/* the siginfo and the ucontext: an undefined instruction's SIGILL at the
+ * pc, which the handler moves past; a fault's code and address */
+static volatile int si_code, si_at_pc, si_mask_ok;
+static volatile uptr si_addr;
+
+static void ill_handler(int sig, struct aquila_siginfo *info, struct aquila_ucontext *uc)
+{
+    (void) sig;
+    si_code = info->si_code;
+    si_at_pc = info->si_addr == uc->uc_mcontext.pc;
+    si_mask_ok = !!(uc->uc_sigmask & (1UL << SIGUSR2));
+    uc->uc_mcontext.pc += 4;
+}
+
+static void segv_handler(int sig, struct aquila_siginfo *info, struct aquila_ucontext *uc)
+{
+    (void) sig;
+    (void) uc;
+    SC(SYS_exit, info->si_code == SEGV_MAPERR && info->si_addr == 0x1234 ? 0 : 1, 0, 0);
+}
+
+static void child_segv_info(void)
+{
+    struct aquila_sigaction sa = {(uptr) segv_handler, 0, 0};
+    SC(SYS_sigaction, SIGSEGV, &sa, 0);
+    *(volatile int *) 0x1234 = 1;
+    SC(SYS_exit, 2, 0, 0);
 }
 
 static void child_exits_7(void)
@@ -216,6 +246,18 @@ void aq_main(void)
     check("sigaction", SC(SYS_sigaction, SIGUSR1, &sa, 0), 0);
     SC(SYS_kill, SC(SYS_getpid, 0, 0, 0), SIGUSR1, 0);
     check("a signal's handler ran, and returned", got_signal, SIGUSR1);
+
+    unsigned long usr2 = 1UL << SIGUSR2;
+    SC(SYS_sigmask, SIG_BLOCK, &usr2, 0);
+    struct aquila_sigaction isa = {(uptr) ill_handler, 0, 0};
+    SC(SYS_sigaction, SIGILL, &isa, 0);
+    volatile int resumed = 0;
+    asm volatile("udf #0");
+    resumed = 1;
+    check("ucontext: SIGILL's ILL_ILLOPC at the pc, the mask, and on past it",
+          si_code == ILL_ILLOPC && si_at_pc && si_mask_ok && resumed, 1);
+    SC(SYS_sigmask, SIG_UNBLOCK, &usr2, 0);
+    check("siginfo: SEGV_MAPERR and its address", aq_child_status(child_segv_info), 0);
 
     /* the tick: sleeping, and the clock */
     uint64_t t0 = now_ms();

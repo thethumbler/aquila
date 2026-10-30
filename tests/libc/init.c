@@ -36,6 +36,7 @@
 #include <sys/auxv.h>
 #include <sys/ioctl.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
 #include <sys/select.h>
@@ -49,6 +50,7 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
+#include <ucontext.h>
 #include <unistd.h>
 #include <wchar.h>
 
@@ -65,11 +67,13 @@ static void check(const char *name, long got, long want)
 static volatile sig_atomic_t got_signal;
 static sigjmp_buf fault_jmp;
 static void *volatile fault_addr;
+static volatile int fault_code;
 
-/* SA_SIGINFO: the faulting address, then back to the test */
+/* SA_SIGINFO: the faulting address and why, then back to the test */
 static void fault_handler(int sig, siginfo_t *info, void *ctx)
 {
     fault_addr = info->si_addr;
+    fault_code = info->si_code;
     siglongjmp(fault_jmp, sig);
 }
 
@@ -689,6 +693,322 @@ static int ps_drain(int fd)
         n += r;
 
     return n;
+}
+
+/* siginfo, ucontext and sigaltstack: who sent a signal, why a fault
+ * came, a handler that changes the context it returns to, a child's
+ * SIGCHLD, a handler on its own stack */
+static siginfo_t si_got;
+static volatile int si_count, si_onstack, si_onstack_flags, si_altstack_eperm;
+static volatile int si_resumed, si_pc_is_addr, si_mask_had;
+static char *volatile si_local;
+
+static void si_handler(int sig, siginfo_t *info, void *ctx)
+{
+    (void) sig;
+    (void) ctx;
+    si_got = *info;
+    si_count++;
+}
+
+/* SIGILL from a trap instruction: the siginfo's address is the
+ * ucontext's pc, and the handler goes on past the instruction */
+static void si_ill_handler(int sig, siginfo_t *info, void *ctx)
+{
+    ucontext_t *uc = ctx;
+
+    (void) sig;
+    si_got = *info;
+#if defined(__x86_64__)
+    si_pc_is_addr = info->si_addr == (void *) uc->uc_mcontext.rip;
+    uc->uc_mcontext.rip += 2;               /* ud2 */
+#elif defined(__i386__)
+    si_pc_is_addr = info->si_addr == (void *) uc->uc_mcontext.eip;
+    uc->uc_mcontext.eip += 2;
+#else
+    si_pc_is_addr = info->si_addr == (void *) uc->uc_mcontext.pc;
+    uc->uc_mcontext.pc += 4;                /* udf */
+#endif
+}
+
+/* the mask it returns with: the ucontext's, which it changes */
+static void si_mask_handler(int sig, siginfo_t *info, void *ctx)
+{
+    ucontext_t *uc = ctx;
+
+    (void) sig;
+    (void) info;
+    si_mask_had = sigismember(&uc->uc_sigmask, SIGTERM) && !sigismember(&uc->uc_sigmask, SIGUSR2);
+    sigaddset(&uc->uc_sigmask, SIGUSR1);
+}
+
+/* on the alternate stack: where it runs, what sigaltstack() says, and
+ * that the stack can't be changed meanwhile */
+static void si_stack_handler(int sig, siginfo_t *info, void *ctx)
+{
+    char here;
+    stack_t ss, other = {0};
+
+    (void) sig;
+    (void) info;
+    (void) ctx;
+    si_local = &here;
+    sigaltstack(NULL, &ss);
+    si_onstack_flags = ss.ss_flags;
+    other.ss_flags = SS_DISABLE;
+    si_altstack_eperm = sigaltstack(&other, NULL) == -1 && errno == EPERM;
+    si_onstack++;
+}
+
+static void si_overflow_handler(int sig)
+{
+    (void) sig;
+    _exit(42);
+}
+
+static int si_recurse(int n)
+{
+    volatile char frame[4096];
+
+    frame[0] = n;
+    return si_recurse(n + 1) + frame[0];
+}
+
+static void *si_thread_altstack(void *arg)
+{
+    stack_t ss;
+
+    sigaltstack(NULL, &ss);
+    *(int *) arg = ss.ss_flags;
+    return NULL;
+}
+
+static void *si_raiser(void *arg)
+{
+    (void) arg;
+    raise(SIGUSR1);
+    return NULL;
+}
+
+/* waits until the SIGCHLD handler ran `n` times */
+static void si_wait_count(int n)
+{
+    for (int i = 0; i < 500 && si_count < n; ++i)
+        usleep(1000);
+}
+
+static void test_siginfo(void)
+{
+    struct sigaction sa = {0}, dfl = {0};
+    sa.sa_sigaction = si_handler;
+    sa.sa_flags = SA_SIGINFO;
+    dfl.sa_handler = SIG_DFL;
+
+    /* sent by kill(): the sender's pid and user id */
+    sigaction(SIGUSR1, &sa, NULL);
+    si_count = 0;
+    kill(getpid(), SIGUSR1);
+    check("siginfo: kill() is SI_USER, from us",
+          si_count == 1 && si_got.si_signo == SIGUSR1 && si_got.si_code == SI_USER &&
+          si_got.si_pid == getpid() && si_got.si_uid == getuid(), 1);
+
+    /* sent by the kernel: a pipe with no reader */
+    sigaction(SIGPIPE, &sa, NULL);
+    int pp[2];
+    pipe(pp);
+    close(pp[0]);
+    si_count = 0;
+    write(pp[1], "x", 1);
+    close(pp[1]);
+    check("siginfo: SIGPIPE is SI_KERNEL", si_count == 1 && si_got.si_code == SI_KERNEL, 1);
+    sigaction(SIGPIPE, &dfl, NULL);
+
+    /* faults: an address with no mapping, then a read-only one */
+    struct sigaction fsa = {0};
+    fsa.sa_sigaction = fault_handler;
+    fsa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &fsa, NULL);
+    int jumped = sigsetjmp(fault_jmp, 1);
+    if (!jumped)
+        *(volatile int *) 0x1234 = 1;
+    check("siginfo: SEGV_MAPERR", jumped == SIGSEGV && fault_code == SEGV_MAPERR && fault_addr == (void *) 0x1234, 1);
+
+    char *ro = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    jumped = sigsetjmp(fault_jmp, 1);
+    if (!jumped)
+        ro[8] = 1;
+    check("siginfo: SEGV_ACCERR", ro != MAP_FAILED && jumped == SIGSEGV &&
+          fault_code == SEGV_ACCERR && fault_addr == ro + 8, 1);
+    munmap(ro, 4096);
+    sigaction(SIGSEGV, &dfl, NULL);
+
+#if defined(__x86_64__) || defined(__i386__)
+    /* an integer division by zero */
+    sigaction(SIGFPE, &fsa, NULL);
+    volatile int zero = 0, quot = 1;
+    jumped = sigsetjmp(fault_jmp, 1);
+    if (!jumped)
+        quot = 7 / zero;
+    check("siginfo: FPE_INTDIV", jumped == SIGFPE && fault_code == FPE_INTDIV && quot == 1, 1);
+    sigaction(SIGFPE, &dfl, NULL);
+#endif
+
+    /* a trap instruction: the handler moves the pc past it, and the
+     * program goes on from there */
+    struct sigaction isa = {0};
+    isa.sa_sigaction = si_ill_handler;
+    isa.sa_flags = SA_SIGINFO;
+    sigaction(SIGILL, &isa, NULL);
+    si_resumed = 0;
+#if defined(__x86_64__) || defined(__i386__)
+    asm volatile("ud2");
+    si_resumed = 1;
+    check("ucontext: SIGILL's ILL_ILLOPN at the pc, and on past it",
+          si_got.si_code == ILL_ILLOPN && si_pc_is_addr && si_resumed, 1);
+#else
+    asm volatile("udf #0");
+    si_resumed = 1;
+    check("ucontext: SIGILL's ILL_ILLOPC at the pc, and on past it",
+          si_got.si_code == ILL_ILLOPC && si_pc_is_addr && si_resumed, 1);
+#endif
+    sigaction(SIGILL, &dfl, NULL);
+
+    /* the mask: the one before the handler, which it changes */
+    sigset_t term, now;
+    sigemptyset(&term);
+    sigaddset(&term, SIGTERM);
+    sigprocmask(SIG_BLOCK, &term, NULL);
+    struct sigaction msa = {0};
+    msa.sa_sigaction = si_mask_handler;
+    msa.sa_flags = SA_SIGINFO;
+    sigaction(SIGUSR2, &msa, NULL);
+    raise(SIGUSR2);
+    sigprocmask(SIG_BLOCK, NULL, &now);
+    check("ucontext: uc_sigmask is the mask before, and comes back changed",
+          si_mask_had && sigismember(&now, SIGUSR1) && sigismember(&now, SIGTERM), 1);
+    sigaddset(&term, SIGUSR1);
+    sigprocmask(SIG_UNBLOCK, &term, NULL);
+    sigaction(SIGUSR2, &dfl, NULL);
+
+    /* sigtimedwait's siginfo */
+    sigset_t usr1;
+    sigemptyset(&usr1);
+    sigaddset(&usr1, SIGUSR1);
+    sigprocmask(SIG_BLOCK, &usr1, NULL);
+    kill(getpid(), SIGUSR1);
+    siginfo_t wi = {0};
+    check("siginfo: sigwaitinfo's", sigwaitinfo(&usr1, &wi) == SIGUSR1 &&
+          wi.si_code == SI_USER && wi.si_pid == getpid(), 1);
+    sigprocmask(SIG_UNBLOCK, &usr1, NULL);
+
+    /* raise() in a thread: that thread takes it, not the first one that
+     * doesn't block it */
+    struct sigaction rsa = {0};
+    rsa.sa_handler = ps_handler;
+    sigaction(SIGUSR1, &rsa, NULL);
+    pthread_t t;
+    ps_handled = 0;
+    pthread_create(&t, NULL, si_raiser, NULL);
+    pthread_join(t, NULL);
+    check("raise: in a thread, to that thread", ps_handled == 1 && pthread_equal(ps_handled_by, t), 1);
+    sigaction(SIGUSR1, &dfl, NULL);
+
+    /* SIGCHLD: how each child changed */
+    sigaction(SIGCHLD, &sa, NULL);
+    int st;
+    si_count = 0;
+    pid_t c = fork();
+    if (!c)
+        _exit(7);
+    si_wait_count(1);
+    check("siginfo: SIGCHLD CLD_EXITED", si_got.si_code == CLD_EXITED && si_got.si_pid == c &&
+          si_got.si_status == 7, 1);
+    waitpid(c, &st, 0);
+
+    si_count = 0;
+    c = fork();
+    if (!c)
+        for (;;)
+            pause();
+    kill(c, SIGSTOP);
+    si_wait_count(1);
+    check("siginfo: SIGCHLD CLD_STOPPED", si_got.si_code == CLD_STOPPED && si_got.si_pid == c &&
+          si_got.si_status == SIGSTOP, 1);
+    waitpid(c, &st, WUNTRACED);
+    kill(c, SIGCONT);
+    si_wait_count(2);
+    check("siginfo: SIGCHLD CLD_CONTINUED", si_got.si_code == CLD_CONTINUED && si_got.si_pid == c, 1);
+    kill(c, SIGTERM);
+    si_wait_count(3);
+    check("siginfo: SIGCHLD CLD_KILLED", si_got.si_code == CLD_KILLED && si_got.si_pid == c &&
+          si_got.si_status == SIGTERM, 1);
+    waitpid(c, &st, 0);
+    sigaction(SIGCHLD, &dfl, NULL);
+
+    /* sigaltstack: none at first, then a handler with SA_ONSTACK runs on
+     * it, and the stack can't change meanwhile */
+    stack_t ss = {0}, old;
+    check("sigaltstack: none at first", sigaltstack(NULL, &old) == 0 && old.ss_flags == SS_DISABLE, 1);
+    ss.ss_sp = malloc(SIGSTKSZ);
+    ss.ss_size = SIGSTKSZ;
+    check("sigaltstack: set", sigaltstack(&ss, NULL), 0);
+    check("sigaltstack: set, not on it", sigaltstack(NULL, &old) == 0 && old.ss_flags == 0 &&
+          old.ss_sp == ss.ss_sp && old.ss_size == SIGSTKSZ, 1);
+    struct sigaction osa = {0};
+    osa.sa_sigaction = si_stack_handler;
+    osa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigaction(SIGUSR2, &osa, NULL);
+    si_onstack = 0;
+    raise(SIGUSR2);
+    check("sigaltstack: the handler runs on it", si_onstack == 1 &&
+          si_local > (char *) ss.ss_sp && si_local < (char *) ss.ss_sp + SIGSTKSZ, 1);
+    check("sigaltstack: SS_ONSTACK in the handler, EPERM to change it",
+          si_onstack_flags == SS_ONSTACK && si_altstack_eperm, 1);
+    osa.sa_flags = SA_SIGINFO;
+    sigaction(SIGUSR2, &osa, NULL);
+    raise(SIGUSR2);
+    check("sigaltstack: not without SA_ONSTACK", si_onstack == 2 &&
+          !(si_local > (char *) ss.ss_sp && si_local < (char *) ss.ss_sp + SIGSTKSZ), 1);
+    sigaction(SIGUSR2, &dfl, NULL);
+
+    int tflags = 0;
+    pthread_create(&t, NULL, si_thread_altstack, &tflags);
+    pthread_join(t, NULL);
+    check("sigaltstack: a new thread has none", tflags, SS_DISABLE);
+
+    stack_t bad = {ss.ss_sp, 0, MINSIGSTKSZ - 1};
+    errno = 0;
+    check("sigaltstack: too small -> ENOMEM", sigaltstack(&bad, NULL) == -1 && errno == ENOMEM, 1);
+    bad.ss_size = SIGSTKSZ;
+    bad.ss_flags = 0x100;
+    errno = 0;
+    check("sigaltstack: bad flags -> EINVAL", sigaltstack(&bad, NULL) == -1 && errno == EINVAL, 1);
+    stack_t off = {0};
+    off.ss_flags = SS_DISABLE;
+    check("sigaltstack: disabled", sigaltstack(&off, NULL) == 0 && sigaltstack(NULL, &old) == 0 &&
+          old.ss_flags == SS_DISABLE, 1);
+
+    /* a stack overflow: SIGSEGV's handler can only run on another stack */
+    for (int on = 0; on < 2; ++on) {
+        c = fork();
+        if (!c) {
+            if (on)
+                sigaltstack(&ss, NULL);
+            struct sigaction vsa = {0};
+            vsa.sa_handler = si_overflow_handler;
+            vsa.sa_flags = SA_ONSTACK;
+            sigaction(SIGSEGV, &vsa, NULL);
+            _exit(si_recurse(0));
+        }
+        waitpid(c, &st, 0);
+        if (on)
+            check("sigaltstack: a stack overflow's handler runs", WIFEXITED(st) && WEXITSTATUS(st) == 42, 1);
+        else
+            check("sigaltstack: without one, the overflow kills", WIFSIGNALED(st) && WTERMSIG(st) == SIGSEGV, 1);
+    }
+
+    free(ss.ss_sp);
+    sigaction(SIGUSR1, &dfl, NULL);
 }
 
 static void test_pthread_signals(void)
@@ -1491,6 +1811,7 @@ int main(void)
     test_x_support();
     test_pthread();
     test_pthread_signals();
+    test_siginfo();
     test_tcp();
     test_err();
     test_resolver();
