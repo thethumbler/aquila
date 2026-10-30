@@ -7,7 +7,7 @@ diff -ruN a/config.def.h b/config.def.h
   */
 -static char *font = "Liberation Mono:pixelsize=12:antialias=true:autohint=true";
 -static int borderpx = 2;
-+static char *font = "Martian Mono:pixelsize=14:antialias=true:autohint=true";
++static char *font = "DejaVu Sans Mono:pixelsize=14:antialias=true";
 +static int borderpx = 8;
  
  /*

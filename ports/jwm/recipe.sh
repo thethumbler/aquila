@@ -13,7 +13,7 @@ NAME=jwm
 VERSION=2.3.7
 URL=https://joewing.net/projects/jwm/releases/jwm-$VERSION.tar.xz
 SHA256=745d2f5df3a4ce9ecc8e75445edb3fbe31dd46c0c26d129cc14de7ad8b665326
-DEPENDS="libx11 libxext libxft libxrender libxpm libxmu libxinerama font-ibm-plex-sans font-martian-mono st"
+DEPENDS="libx11 libxext libxft libxrender libxpm libxmu libxinerama font-ibm-plex-sans st"
 
 build()
 {

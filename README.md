@@ -278,8 +278,8 @@ They are also published on GitHub Pages from `main`, by
 - [X] TinyX   (Xfbdev, X server on the framebuffer, port) with X.Org's
               fixed and cursor fonts, Xlib and the X Toolkit (ports)
 - [X] twm and xterm (ports), `startx`
-- [X] the desktop: JWM (port), with IBM Plex Sans and Martian Mono
-              (ports), aquilaos.com's palette, dark and light
+- [X] the desktop: JWM (port), with IBM Plex Sans (port) and
+              aquilaos.com's palette, dark and light
 - [X] dwm, st and dmenu (ports), with Xft, fontconfig, FreeType and
               DejaVu fonts (ports)
 - [X] Doom    (doomgeneric with Freedoom, ports): on the framebuffer and
@@ -312,7 +312,6 @@ netcat, runit and Freedoom: BSD; kilo: BSD 2-Clause; sbase, sdhcp, Lua,
 libtermkey, expat, dwm, st, dmenu and JWM: MIT; ncurses, xterm, curl,
 fontconfig and the X.Org libraries: MIT-style; X.Org's misc and cursor
 fonts: public domain; vis: ISC; zlib: zlib; FreeType: FreeType License
-or GPLv2; DejaVu fonts: Bitstream Vera; IBM Plex Sans and Martian Mono: SIL Open
-Font License 1.1; Mbed TLS: Apache 2.0 or GPLv2
+or GPLv2; DejaVu fonts: Bitstream Vera; IBM Plex Sans: SIL Open Font License 1.1; Mbed TLS: Apache 2.0 or GPLv2
 (or later); tcc: LGPLv2.1; bash: GPLv3; TinyX: GPLv3; UnixBench and
 doomgeneric: GPLv2; Microwindows: MPL 1.1 or GPLv2.
