@@ -37,7 +37,7 @@ are compiled against the same numbers and structures.
 #define SYS_execve          3
 #define SYS_fork            4
 ...
-#define SYS_sigreturn       95
+#define SYS_sigpending      99
 ```
 
 The kernel's handlers are the `sys_*` functions, by subject in

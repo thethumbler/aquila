@@ -160,7 +160,7 @@ static void isr_dispatch(struct x86_regs *regs)
         /* one from user mode that can't be resolved: SIGSEGV, delivered
          * on the way back */
         if ((regs->cs & 3) == 3) {
-            signal_force(curproc, SIGSEGV);
+            signal_force(curthread, SIGSEGV);
             x86_return_to_user(regs, 0);
             return;
         }
@@ -209,7 +209,7 @@ static void isr_dispatch(struct x86_regs *regs)
 #else
         curthread->fault_addr = regs->rip;
 #endif
-        signal_force(curproc, int_sig[vec]);
+        signal_force(curthread, int_sig[vec]);
         x86_return_to_user(regs, 0);
         return;
     }

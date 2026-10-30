@@ -141,7 +141,7 @@ static void deliver(struct aarch64_regs *r, int sig)
 
     /* the mask to come back to: for `sigsuspend()` and `pselect()`, it's
      * the one they replaced */
-    sigset_t mask = thread->sig_oldmask_set ? thread->sig_oldmask : proc->sigmask;
+    sigset_t mask = thread->sig_oldmask_set ? thread->sig_oldmask : thread->sigmask;
     thread->sig_oldmask_set = 0;
 
     uintptr_t f = (r->sp - sizeof(struct sigframe)) & ~(uintptr_t) 15;
@@ -185,7 +185,7 @@ static void deliver(struct aarch64_regs *r, int sig)
     /* while the handler runs, its mask is blocked, and so is the signal
      * itself unless `SA_NODEFER` is set */
     sigset_t block = sa->sa_mask | (sa->sa_flags & SA_NODEFER ? 0 : 1UL << sig);
-    proc->sigmask = (mask | block) & ~SIG_UNMASKABLE;
+    thread->sigmask = (mask | block) & ~SIG_UNMASKABLE;
 
     if (sa->sa_flags & SA_RESETHAND)
         sa->sa_handler = SIG_DFL;
@@ -236,7 +236,7 @@ void aarch64_return_to_user(struct aarch64_regs *r, int syscall)
         deliver(r, sig);
     } else if (thread->sig_oldmask_set) {
         /* `sigsuspend()` is restarted: put back the mask it replaced */
-        proc->sigmask = thread->sig_oldmask;
+        thread->sigmask = thread->sig_oldmask;
         thread->sig_oldmask_set = 0;
     }
 }
@@ -253,7 +253,7 @@ void arch_sigreturn(void)
     struct sigframe frame;
 
     if ((f & 15) || copyin(&frame, (void *) f, sizeof(frame))) {
-        signal_force(curproc, SIGSEGV);
+        signal_force(curthread, SIGSEGV);
         return;
     }
 
@@ -264,6 +264,6 @@ void arch_sigreturn(void)
     *r = frame.regs;
     r->pstate = pstate;
 
-    curproc->sigmask = frame.mask & ~SIG_UNMASKABLE;
+    curthread->sigmask = frame.mask & ~SIG_UNMASKABLE;
     aarch64_fpsimd_restore(curthread, frame.fpsimd_valid ? frame.fpsimd : NULL);
 }

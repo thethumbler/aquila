@@ -31,14 +31,16 @@ struct aquila_sigaction;
 extern int sig_default_action[SIG_MAX+1];
 
 /*
- * Sending a signal makes it pending (a bit for each signal) and wakes up
- * the process's sleeping threads. Signals are delivered only on the way
- * back to user mode (signal_take(), from the architecture's return path),
- * never from the middle of the kernel: a sleep that a signal interrupts
- * returns ERESTARTSYS, and the system call unwinds.
+ * Sending a signal makes it pending (a bit for each signal), on the
+ * process or on one thread, and wakes up a thread that doesn't block it.
+ * Signals are delivered only on the way back to user mode (signal_take(),
+ * from the architecture's return path), never from the middle of the
+ * kernel: a sleep that a signal interrupts returns ERESTARTSYS, and the
+ * system call unwinds.
  */
 int signal_send(int pid, int sig);
 int signal_proc_send(struct proc *proc, int signal);
+int signal_thread_send(struct thread *thread, int signal);
 int signal_pgrp_send(struct pgroup *pg, int signal);
 
 /* Notes that sigaction() changed a signal's action (a pending signal that
@@ -48,11 +50,16 @@ void signal_action_set(struct proc *proc, int sig);
 /* Sends a fault's signal (SIGSEGV, SIGILL...): it is delivered even if
  * it's blocked or ignored, by its default action then, because the
  * instruction would only fault again. */
-void signal_force(struct proc *proc, int signal);
+void signal_force(struct thread *thread, int signal);
 
-/* Says whether a signal is pending that the thread's process doesn't
- * block, which ends its interruptible sleeps. */
+/* Says whether a signal is pending that the thread doesn't block (or
+ * waits for, in sigtimedwait()), which ends its interruptible sleeps. */
 int signal_interrupts(struct thread *thread);
+
+/* Takes a pending signal of `set` for the thread, blocked or not (for
+ * sigtimedwait()): the lowest numbered, its own before its process's.
+ * Returns it, or 0 if none is pending. */
+int signal_dequeue(struct thread *thread, sigset_t set);
 
 /* On the way back to user mode: stops the process, or does the default
  * actions, of the pending signals (terminating doesn't return), and

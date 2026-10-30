@@ -90,7 +90,7 @@ static void abort(struct aarch64_regs *r, int ec)
     }
 
     if (user) {
-        signal_force(curproc, SIGSEGV);
+        signal_force(curthread, SIGSEGV);
         aarch64_return_to_user(r, 0);
         return;
     }
@@ -133,7 +133,7 @@ static void sync_dispatch(struct aarch64_regs *r)
              * on) */
             if (REGS_USER(r)) {
                 if (aarch64_fpsimd_trap())
-                    signal_force(curproc, SIGKILL);
+                    signal_force(curthread, SIGKILL);
 
                 aarch64_return_to_user(r, 0);
                 return;
@@ -148,7 +148,7 @@ static void sync_dispatch(struct aarch64_regs *r)
                   ec == EC_BRK ? SIGTRAP : SIGILL;
 
         curthread->fault_addr = r->pc;
-        signal_force(curproc, sig);
+        signal_force(curthread, sig);
         aarch64_return_to_user(r, 0);
         return;
     }

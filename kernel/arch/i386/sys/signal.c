@@ -163,7 +163,7 @@ static void deliver(struct x86_regs *r, int sig)
 
     /* the mask to restore afterwards; for sigsuspend() and pselect(),
      * it is the one they replaced */
-    sigset_t mask = thread->sig_oldmask_set ? thread->sig_oldmask : proc->sigmask;
+    sigset_t mask = thread->sig_oldmask_set ? thread->sig_oldmask : thread->sigmask;
     thread->sig_oldmask_set = 0;
 
 #if ARCH_BITS==32
@@ -228,7 +228,7 @@ static void deliver(struct x86_regs *r, int sig)
     /* while it runs, its mask is blocked, and the signal itself (unless
      * SA_NODEFER) */
     sigset_t block = sa->sa_mask | (sa->sa_flags & SA_NODEFER ? 0 : 1UL << sig);
-    proc->sigmask = (mask | block) & ~SIG_UNMASKABLE;
+    thread->sigmask = (mask | block) & ~SIG_UNMASKABLE;
 
     if (sa->sa_flags & SA_RESETHAND)
         sa->sa_handler = SIG_DFL;
@@ -280,7 +280,7 @@ void x86_return_to_user(struct x86_regs *r, int syscall)
         deliver(r, sig);
     } else if (thread->sig_oldmask_set) {
         /* sigsuspend() restarted: restore the mask it replaced */
-        proc->sigmask = thread->sig_oldmask;
+        thread->sigmask = thread->sig_oldmask;
         thread->sig_oldmask_set = 0;
     }
 
@@ -309,7 +309,7 @@ void arch_sigreturn(void)
     struct sigframe frame;
 
     if ((f & 15) || copyin(&frame, (void *) f, sizeof(frame))) {
-        signal_force(curproc, SIGSEGV);
+        signal_force(curthread, SIGSEGV);
         return;
     }
 
@@ -326,6 +326,6 @@ void arch_sigreturn(void)
     r->ds = r->es = r->fs = r->gs = X86_SS;
 #endif
 
-    curproc->sigmask = frame.mask & ~SIG_UNMASKABLE;
+    curthread->sigmask = frame.mask & ~SIG_UNMASKABLE;
     x86_fpu_load_from(frame.fxsave, frame.fpu);
 }

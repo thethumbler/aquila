@@ -57,6 +57,26 @@ struct thread {
     /** what the thread exited with (thread_exit()), for thread_join() */
     void *exit_value;
 
+    /** whether it's detached (thread_detach()): no one joins it, and it
+     *  frees itself when it exits */
+    int detached;
+
+    /** the user address of an int set to 0 once it's gone (the C library
+     *  then frees its stack), or 0 */
+    uintptr_t alive;
+
+    /** its blocked signals, a bit (1 << sig) each: a new thread starts
+     *  with its creator's */
+    sigset_t sigmask;
+
+    /** the signals pending on it alone (a fault's, pthread_kill()'s),
+     *  which it takes before its process's */
+    sigset_t sig_pending;
+
+    /** in sigtimedwait(): the signals it waits for, blocked or not; one
+     *  sent to the process goes to it first */
+    sigset_t sig_waiting;
+
     /** in sigsuspend() or pselect(): the signal mask they replaced, which
      *  the handler's frame keeps (sigreturn() restores it), or which is
      *  restored on the way out */
@@ -106,6 +126,7 @@ struct thread {
 int thread_new(struct proc *proc, struct thread **rthread);
 int thread_create(struct thread *thread, uintptr_t stack, uintptr_t entry, uintptr_t uentry, uintptr_t arg, uintptr_t attr, struct thread **new_thread);
 int thread_kill(struct thread *thread);
+struct thread *thread_find(struct proc *proc, tid_t tid);
 
 /* Lets go of the files a thread's system call holds (fs/file.c). */
 void thread_files_release(struct thread *thread);

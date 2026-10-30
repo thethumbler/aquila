@@ -1,7 +1,8 @@
 /** \file
- * System calls about signals, timers and the time: `kill()`,
- * `sigaction()`, the signal mask, `sigsuspend()` and `sigreturn()`,
- * `setitimer()`, `nanosleep()`, and the clocks.
+ * System calls about signals, timers and the time: `kill()` and
+ * `pthread_kill()`, `sigaction()`, the signal mask, `sigsuspend()`,
+ * `sigtimedwait()` and `sigreturn()`, `setitimer()`, `nanosleep()`, and
+ * the clocks.
  */
 
 #include "syscalls.h"
@@ -23,6 +24,31 @@ long sys_kill(pid_t pid, int sig)
     /* a signal sent to ourselves is delivered on the way back to user
      * mode, before kill() returns */
     return signal_send(pid, sig);
+}
+
+/**
+ * Implements `pthread_kill()`: sends a signal to a thread of the calling
+ * process. The thread takes it, unless it blocks it; its action is the
+ * process's, so a signal that terminates ends the whole process.
+ *
+ * @param tid  the thread's ID
+ * @param sig  the signal, or 0 to only check that the thread exists
+ * @return 0, `-EINVAL` for a bad signal, or `-ESRCH` if there is no such
+ *         thread, or it has exited
+ */
+long sys_thread_kill(int tid, int sig)
+{
+    syscall_log(LOG_DEBUG, "thread_kill(tid=%d, sig=%d)\n", tid, sig);
+
+    if (sig < 0 || sig > SIG_MAX)
+        return -EINVAL;
+
+    struct thread *thread = thread_find(curproc, tid);
+
+    if (!thread || thread->state == ZOMBIE)
+        return -ESRCH;
+
+    return signal_thread_send(thread, sig);
 }
 
 /**
@@ -97,8 +123,9 @@ long sys_gettimeofday(struct timeval *tv, struct timezone *tz)
 }
 
 /**
- * Implements `sigprocmask()`: reads and changes the process's signal
- * mask. `SIGKILL` and `SIGSTOP` can't be blocked.
+ * Implements `sigprocmask()` and `pthread_sigmask()`: reads and changes
+ * the calling thread's signal mask. `SIGKILL` and `SIGSTOP` can't be
+ * blocked.
  *
  * @param how     `SIG_BLOCK`, `SIG_UNBLOCK` or `SIG_SETMASK`
  * @param set     the signals, or NULL to leave the mask
@@ -109,7 +136,7 @@ long sys_sigmask(int how, const sigset_t *set, sigset_t *oldset)
 {
     syscall_log(LOG_DEBUG, "sigmask(how=%d, set=%p, oldset=%p)\n", how, set, oldset);
 
-    sigset_t kset, mask = curproc->sigmask;
+    sigset_t kset, mask = curthread->sigmask;
 
     if (set && copyin(&kset, set, sizeof(kset))) {
         return -EFAULT;
@@ -125,19 +152,35 @@ long sys_sigmask(int how, const sigset_t *set, sigset_t *oldset)
         }
     }
 
-    if (oldset && copyout(oldset, &curproc->sigmask, sizeof(sigset_t))) {
+    if (oldset && copyout(oldset, &curthread->sigmask, sizeof(sigset_t))) {
         return -EFAULT;
     }
 
     /* a pending signal that is no longer blocked is delivered before this
      * returns to user mode */
-    curproc->sigmask = mask & ~SIG_UNMASKABLE;
+    curthread->sigmask = mask & ~SIG_UNMASKABLE;
     return 0;
 }
 
 /**
- * Implements `sigsuspend()`: replaces the signal mask and waits for a
- * signal. The old mask comes back once a handler has run.
+ * Implements `sigpending()`: the signals that are pending for the calling
+ * thread, its own and its process's, and that it blocks.
+ *
+ * @param set  where to put them
+ * @return 0, or `-EFAULT`
+ */
+long sys_sigpending(sigset_t *set)
+{
+    syscall_log(LOG_DEBUG, "sigpending(set=%p)\n", set);
+
+    sigset_t pending = (curthread->sig_pending | curproc->sig_pending) & curthread->sigmask;
+
+    return copyout(set, &pending, sizeof(pending));
+}
+
+/**
+ * Implements `sigsuspend()`: replaces the calling thread's signal mask and
+ * waits for a signal. The old mask comes back once a handler has run.
  *
  * @param set  the mask to wait with
  * @return `-EINTR` once a handler has run (it is restarted after a stop),
@@ -158,9 +201,9 @@ long sys_sigsuspend(const sigset_t *set)
 
     /* the mask it replaces goes in the handler's frame (sigreturn()
      * restores it), or comes back if the call is restarted */
-    thread->sig_oldmask = curproc->sigmask;
+    thread->sig_oldmask = thread->sigmask;
     thread->sig_oldmask_set = 1;
-    curproc->sigmask = kset & ~SIG_UNMASKABLE;
+    thread->sigmask = kset & ~SIG_UNMASKABLE;
 
     /* sleep until a signal it doesn't block comes (nothing else wakes it
      * up) */
@@ -169,6 +212,86 @@ long sys_sigsuspend(const sigset_t *set)
 
     /* EINTR once a handler ran; restarted if none did (a stop) */
     return -ERESTARTNOHAND;
+}
+
+/**
+ * Implements `sigtimedwait()` (and `sigwait()`, `sigwaitinfo()`): waits
+ * for a signal of a set, which the caller blocks, and takes it without
+ * running its handler. A stop doesn't change the deadline: the call is
+ * restarted until the same time.
+ *
+ * @param set      the signals to wait for (`SIGKILL` and `SIGSTOP` aren't
+ *                 waited for)
+ * @param info     where to put the signal's siginfo, or NULL
+ * @param timeout  how long to wait at most, or NULL for no limit
+ * @return the signal, or a negative errno: `-EAGAIN` once the time is up,
+ *         `-EINTR` if another signal's handler ran, `-EINVAL` for a bad
+ *         time, `-EFAULT`
+ */
+long sys_sigtimedwait(const sigset_t *set, struct aquila_siginfo *info,
+                      const struct aquila_timespec *timeout)
+{
+    syscall_log(LOG_DEBUG, "sigtimedwait(set=%p, info=%p, timeout=%p)\n", set, info, timeout);
+
+    sigset_t kset;
+    struct aquila_timespec kts;
+
+    if (copyin(&kset, set, sizeof(kset)) || (timeout && copyin(&kts, timeout, sizeof(kts)))) {
+        return -EFAULT;
+    }
+
+    if (timeout && ((int64_t) kts.tv_sec < 0 || kts.tv_nsec < 0 || kts.tv_nsec >= 1000000000)) {
+        return -EINVAL;
+    }
+
+    kset &= ~SIG_UNMASKABLE;
+
+    /* a call restarted after a stop keeps the deadline it had; with no
+     * timeout there's none (0), and a zero timeout only looks */
+    struct thread *thread = curthread;
+    uint64_t until = 0;
+
+    if (timeout) {
+        until = thread->restarting ? thread->restart_until :
+                arch_rtime_ns() + kts.tv_sec * 1000000000ULL + kts.tv_nsec;
+        thread->restart_until = until;
+    }
+
+    struct waitq wait = {0};
+    int sig;
+
+    for (;;) {
+        if ((sig = signal_dequeue(thread, kset)))
+            break;
+
+        if (timeout && arch_rtime_ns() >= until) {
+            return -EAGAIN;
+        }
+
+        /* nothing but a signal wakes it up, or the deadline */
+        thread->sig_waiting = kset;
+        int r = sched_wait(&wait, until);
+        thread->sig_waiting = 0;
+
+        /* another signal, one it doesn't wait for: EINTR once its handler
+         * ran, a restart after a stop */
+        if (r < 0 && !(sig = signal_dequeue(thread, kset))) {
+            return -ERESTARTNOHAND;
+        }
+
+        if (sig)
+            break;
+    }
+
+    if (info) {
+        struct aquila_siginfo kinfo = {.si_signo = sig};
+
+        if (copyout(info, &kinfo, sizeof(kinfo))) {
+            return -EFAULT;
+        }
+    }
+
+    return sig;
 }
 
 /**

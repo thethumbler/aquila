@@ -44,7 +44,7 @@ static int copy_fds(struct proc *parent, struct proc *fork)
 }
 
 /** Copies what the child inherits from the parent's process structure:
- * its process group, umask, IDs, signal mask and actions, and heap.
+ * its process group, umask, IDs, signal actions, and heap.
  * Returns 0, or `-ENOMEM` if there was no memory to put the child in the
  * process group. */
 static int fork_proc_copy(struct proc *parent, struct proc *fork)
@@ -56,7 +56,6 @@ static int fork_proc_copy(struct proc *parent, struct proc *fork)
 
     fork->mask = parent->mask;
     fork->uid  = parent->uid;
-    fork->sigmask = parent->sigmask;
     fork->gid  = parent->gid;
 
     fork->heap_start = parent->heap_start;
@@ -115,8 +114,10 @@ int proc_fork(struct thread *thread, struct proc **ref)
     fork->parent = proc;
 
     /* the child's thread starts as if it had been switched away from:
-     * from where fork() returns */
+     * from where fork() returns; with the signal mask of the thread that
+     * forked, and nothing pending */
     fork_thread->spawned = 1;
+    fork_thread->sigmask = thread->sigmask;
 
     /* the same current directory */
     if ((fork->cwd = proc->cwd))

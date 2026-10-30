@@ -29,9 +29,16 @@ A process has, for each signal ([`include/sys/proc.h`](../../kernel/include/sys/
 
 - its **action**, `sigaction[sig]`: `SIG_DFL`, `SIG_IGN`, or a handler,
   with the flags and the mask of the `sigaction()` call that set it;
-- a bit in its **pending** set, `sig_pending`: sent, not yet delivered;
-- a bit in its **mask**, `sigmask`: blocked, it stays pending until
-  unblocked.
+- a bit in its **pending** set, `sig_pending`: sent to the process, not
+  yet taken by any of its threads.
+
+And each of its threads has ([`include/sys/thread.h`](../../kernel/include/sys/thread.h)):
+
+- a bit in its own **pending** set, `sig_pending`: sent to that thread
+  alone (a fault's signal, `pthread_kill()`, the `SIGPIPE` of its write);
+- a bit in its **mask**, `sigmask`: blocked, the signal stays pending
+  until the thread unblocks it, or another thread that doesn't block it
+  takes it.
 
 The sets are bit masks, signal *n* being bit `1 << n`. A signal sent
 again while pending is delivered once: signals aren't counted, as
@@ -52,10 +59,13 @@ The default actions ([`sys/signal.c`](../../kernel/sys/signal.c),
 aborts as it terminates. `SIGKILL` and `SIGSTOP` can't be caught,
 ignored or blocked (`SIG_UNMASKABLE`).
 
-The mask and the pending set are the process's, shared by its threads.
-POSIX gives each thread its own mask, and lets a signal be sent to one
-thread; AquilaOS doesn't, and delivers a signal to whichever of the
-process's threads returns to user mode first.
+The action is the process's, whichever thread takes the signal: a
+signal whose default action terminates ends the whole process, even if
+it was sent to one thread. The mask is the thread's, as POSIX says: a
+new thread starts with its creator's mask (`thread_create()`), and the
+child of a `fork()` with the mask of the thread that forked; `exec`
+keeps it. `sigprocmask()` and `pthread_sigmask()` are the same call,
+changing the calling thread's mask.
 
 ### Sending
 
@@ -67,8 +77,9 @@ Every way of sending a signal ends in `signal_to()`:
 | the terminal              | `^C`, `^\`, `^Z` to its foreground group; `SIGTTIN`, `SIGTTOU` to a background group that reads or writes it; `SIGHUP` when it hangs up (`dev/tty/generic.c`) |
 | a child                   | `SIGCHLD` to its parent when it exits, stops or continues |
 | the timer                 | `SIGALRM` (`sched_timer_tick()`)                        |
-| a write with no reader    | `SIGPIPE`, to the writer (pipes, sockets)               |
-| a fault                   | `signal_force()`: `SIGSEGV`, `SIGILL`, `SIGFPE`, `SIGBUS`, `SIGTRAP`, from the architecture's trap handler |
+| a write with no reader    | `SIGPIPE`, to the writing thread (pipes, sockets)       |
+| a fault                   | `signal_force()`: `SIGSEGV`, `SIGILL`, `SIGFPE`, `SIGBUS`, `SIGTRAP` to the faulting thread, from the architecture's trap handler |
+| `pthread_kill()`          | `thread_kill()`: one thread of the caller's process (`signal_thread_send()`) |
 | `Ctrl-Alt-Del`            | `SIGINT` to init, if it asked for it (`reboot(RB_DISABLE_CAD)`); otherwise the machine restarts (`sys/reboot.c`) |
 
 `signal_to()` doesn't run anything. It:
@@ -80,17 +91,24 @@ Every way of sending a signal ends in `signal_to()`:
 2. discards the signal if delivering it would do nothing: its action is
    `SIG_IGN`, or it's `SIG_DFL` and the default is to ignore, or to
    continue (`SIGCONT`'s, done already);
-3. otherwise sets its bit in the pending set;
-4. if the process doesn't block it, wakes its threads that sleep in an
-   *interruptible* sleep (`ISLEEP`), and makes those running on another
-   CPU enter the kernel now (`sched_thread_kick()`).
+3. otherwise sets its bit in the pending set: the thread's, for a
+   signal sent to one thread, or the process's;
+4. picks the thread to take it, and makes it come back to user mode
+   soon: woken if it sleeps in an *interruptible* sleep (`ISLEEP`), made
+   to enter the kernel now if it runs on another CPU
+   (`sched_thread_kick()`). For a thread's own signal, it's that thread,
+   unless it blocks the signal. For a process's, it's a thread waiting
+   for the signal in `sigtimedwait()` if there is one, else the first
+   that doesn't block it; if they all block it, it stays pending until
+   one unblocks it. `SIGKILL` wakes them all.
 
 Process 0, the kernel's, takes no signals; a zombie takes none either.
 
 `signal_force()` is for faults: the instruction that faulted would fault
 again if the signal were blocked or ignored, so if it is either, it
 unblocks the signal and resets its action to the default first. A program that blocks
-`SIGSEGV` and then faults dies.
+`SIGSEGV` and then faults dies. The signal is the faulting thread's: no
+other thread could take it in its place.
 
 ### Interrupting system calls
 
@@ -123,8 +141,9 @@ The names, and the scheme, are Linux's.
 A signal is delivered at one place only: **on the way back to user
 mode**, from a system call, an interrupt or an exception. The
 architecture's return path calls `signal_take()`, which looks at the
-signals that are pending and not blocked, `SIGKILL` first, then the
-lowest numbered, and for each:
+signals that are pending, the thread's own and its process's, and that
+the thread doesn't block, `SIGKILL` first, then the lowest numbered, the
+thread's own before its process's, and for each:
 
 - `SIG_IGN`: dropped (it was ignored after it was sent);
 - terminate or abort by default: the process ends (`signal_exit()`), its
@@ -179,7 +198,8 @@ segments only, no flags user mode couldn't set itself.
 
 Every handler gets the `siginfo`, as with `SA_SIGINFO`; its third
 argument, the `ucontext`, is `NULL`. There is no alternate signal stack
-(`sigaltstack()`).
+(`sigaltstack()`). The handler's mask (step 4) is the thread's that
+takes the signal.
 
 ### Stopping and continuing
 
@@ -188,6 +208,13 @@ A process stops by taking a stop signal (`SIGSTOP`, `SIGTSTP` from `^Z`,
 it stopped, tells its parent (`SIGCHLD`, unless `SA_NOCLDSTOP`, and a
 wakeup in `waitpid()` with `WUNTRACED`), and the thread sleeps on the
 process's `stop_queue`, uninterruptibly: only continuing ends it.
+
+The whole process stops, not only the thread that took the signal: each
+of its other threads stops in `signal_take()`, on its way back to user
+mode, sleeping on the same queue. Those running on another CPU are made
+to enter the kernel at once (`sched_thread_kick()`); those sleeping in a
+system call stop when it returns, so a thread waiting for input stays
+waiting, and stops if the input comes.
 `SIGCONT` and `SIGKILL` continue it when they're sent (`signal_to()`),
 and its parent's `waitpid()` with `WCONTINUED` hears about it.
 
@@ -204,6 +231,17 @@ continue it. `SIGSTOP` always does.
   back on the way out.
 - `pselect()` is `select()` with a mask while it waits, kept the same
   way.
+- `sigtimedwait(set, info, timeout)` takes a signal of `set` without
+  running its handler: one already pending (the thread's own or its
+  process's), or the first to come, until the timeout. The caller blocks
+  the signals it waits for, so that no handler takes them first; while
+  it waits, its `sig_waiting` set says that it would take them anyway,
+  and a process's signal of the set goes to it rather than to another
+  thread. Another signal, one it doesn't wait for, ends the wait with
+  `EINTR` once its handler ran. The C library makes `sigwait()`,
+  `sigwaitinfo()` and `sigtimedwait()` of it.
+- `sigpending()` is what is pending for the calling thread, its own and
+  its process's, and blocked.
 - `sigprocmask()` changes the mask; a signal it unblocks that was pending
   is delivered before the call returns to user mode. `kill()` of the
   caller itself is the same: the signal is delivered before `kill()`
@@ -307,7 +345,7 @@ the FP/SIMD state back (`aarch64_fpsimd_restore()`).
 | `include/uapi/aquila/signal.h`      | kernel  | the numbers, `siginfo`, `sigaction` and its flags (shared with the C library) |
 | `kernel/include/sys/signal.h`       | kernel  | the interface, `ERESTARTSYS`, `ERESTARTNOHAND` |
 | `kernel/sys/signal.c`               | kernel  | default actions, sending, taking, stopping   |
-| `kernel/sys/sys_signal.c`           | kernel  | `kill`, `sigaction`, `sigprocmask`, `sigsuspend`, `sigreturn` |
+| `kernel/sys/sys_signal.c`           | kernel  | `kill`, `thread_kill`, `sigaction`, `sigprocmask`, `sigpending`, `sigsuspend`, `sigtimedwait`, `sigreturn` |
 | `kernel/sys/sys_poll.c`             | kernel  | `select`'s mask                              |
 | `kernel/sys/proc.c`                 | kernel  | `SIGCHLD`, orphaned groups                   |
 | `kernel/dev/tty/generic.c`          | kernel  | the terminal's signals                       |
@@ -323,7 +361,9 @@ the FP/SIMD state back (`aarch64_fpsimd_restore()`).
 ## References
 
 - POSIX.1-2017 (*The Open Group Base Specifications, Issue 7*): *Signal
-  Concepts* (2.4), `sigaction()`, `sigprocmask()`, `sigsuspend()`,
+  Concepts* (2.4), including *Signal Generation and Delivery* (which
+  thread takes a process's signal), `sigaction()`, `sigprocmask()`,
+  `pthread_sigmask()`, `pthread_kill()`, `sigsuspend()`, `sigtimedwait()`,
   `pselect()`, `kill()`, and *Interruption of system calls*.
 - *Advanced Programming in the UNIX Environment*, W. Richard Stevens and
   Stephen A. Rago: chapter 10, signals as programs see them, and the

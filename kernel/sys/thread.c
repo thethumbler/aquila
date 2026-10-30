@@ -69,9 +69,30 @@ int thread_kill(struct thread *thread)
 }
 
 /**
+ * Finds a thread of a process by its ID.
+ *
+ * @param proc  the process
+ * @param tid   the thread's ID
+ * @return the thread, a zombie or not, or NULL if the process has none
+ *         with that ID
+ */
+struct thread *thread_find(struct proc *proc, tid_t tid)
+{
+    queue_for (node, &proc->threads) {
+        struct thread *thread = node->value;
+
+        if (thread->tid == tid)
+            return thread;
+    }
+
+    return NULL;
+}
+
+/**
  * Makes a new thread in the process of an existing one, for
  * `pthread_create()`. The new thread is set up to start at `uentry` in
- * user mode, but isn't made ready to run: the caller does that.
+ * user mode, with the signal mask of `thread` and no pending signals, but
+ * isn't made ready to run: the caller does that.
  *
  * @param thread      a thread of the process to add the new one to
  * @param stack       the new thread's user stack
@@ -96,6 +117,8 @@ int thread_create(struct thread *thread, uintptr_t stack, uintptr_t entry, uintp
         kfree(t);
         return err;
     }
+
+    t->sigmask = thread->sigmask;
 
     if (new_thread)
         *new_thread = t;

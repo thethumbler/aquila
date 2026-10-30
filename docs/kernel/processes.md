@@ -86,7 +86,7 @@ and its kernel stack.
 | `RUNNABLE` | running, or ready to run                                         |
 | `ISLEEP`   | sleeping, until woken or a signal comes                          |
 | `USLEEP`   | sleeping, until woken: signals wait (a disk read halfway)        |
-| `ZOMBIE`   | exited (`thread_exit()`), waiting for `thread_join()`            |
+| `ZOMBIE`   | exited (`thread_exit()`), waiting for `thread_join()` (a detached thread is freed instead) |
 
 Each thread has two stacks: its user stack, in its process's memory, and
 a *kernel stack*, which the CPU switches to when the thread enters the
@@ -319,11 +319,24 @@ the next id.
   to exit ends the process, as `exit(0)`.
 - `thread_join()` sleeps on the process's `thread_join` queue until the
   thread is a zombie, writes its value out, and frees what is left of
-  it.
+  it. It looks the thread up again after each wakeup, since another
+  thread may have joined or detached it meanwhile.
+- `thread_detach()` says no one will join a thread
+  (`pthread_detach()`, or `PTHREAD_CREATE_DETACHED`): it is freed when it
+  exits, without becoming a zombie, or at once if it already is one.
+  Joining a detached thread fails with `EINVAL`.
 
-A process's threads share its signal mask and pending signals: POSIX
-gives each thread its own mask, AquilaOS doesn't (see
-[Signals](signals.md)).
+The thread's user stack is the C library's: the kernel doesn't know
+where it starts. `thread_create()` takes the address of an int, which
+the kernel sets to 0 in `thread_exit()`, once the thread no longer uses
+its stack; the C library frees the stack of a joined thread in
+`pthread_join()`, and that of a detached one in a later
+`pthread_create()` that finds the int cleared. (Linux's
+`CLONE_CHILD_CLEARTID` is the same idea.)
+
+Each thread has its own signal mask, starting with its creator's, and
+its own pending signals; a signal can be sent to one thread
+(`thread_kill()`, `pthread_kill()`). See [Signals](signals.md).
 
 ### exit and wait
 

@@ -262,7 +262,7 @@ int tty_background(struct tty *tty, int sig)
 
     if (tty->session && proc->pgrp->session == tty->session &&
         tty->fg && proc->pgrp != tty->fg) {
-        if ((proc->sigmask & (1UL << sig)) || proc->sigaction[sig].sa_handler == SIG_IGN)
+        if ((curthread->sigmask & (1UL << sig)) || proc->sigaction[sig].sa_handler == SIG_IGN)
             return sig == SIGTTIN ? -EIO : 0;
 
         /* an orphaned group isn't stopped: no one would continue it */

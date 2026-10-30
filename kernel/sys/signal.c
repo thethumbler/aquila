@@ -1,14 +1,16 @@
 /** \file
  * Signals: sending them, and taking them on the way back to user mode.
  *
- * Sending a signal makes it pending (a bit of `proc->sig_pending`). If the
- * process doesn't block it, its threads that sleep where a signal may end
- * the sleep (`waitq_sleep()`) wake up: they return `-ERESTARTSYS`, and
- * their system calls unwind. A signal is only delivered on the way back
- * to user mode: the architecture's return path calls `signal_take()`,
- * which carries out stops and default actions, and runs the handler it
- * returns. So the kernel never leaves anything halfway for a signal. See
- * docs/kernel/signals.md.
+ * Sending a signal makes it pending: on the process (`proc->sig_pending`,
+ * for `kill()`), or on one thread (`thread->sig_pending`, for a fault or
+ * `pthread_kill()`). Each thread has its own mask. A process's signal
+ * wakes up one thread that doesn't block it: if that thread sleeps where
+ * a signal may end the sleep (`waitq_sleep()`), the sleep returns
+ * `-ERESTARTSYS`, and its system call unwinds. A signal is only delivered
+ * on the way back to user mode: the architecture's return path calls
+ * `signal_take()`, which carries out stops and default actions, and runs
+ * the handler it returns. So the kernel never leaves anything halfway for
+ * a signal. See docs/kernel/signals.md.
  */
 
 #include <core/system.h>
@@ -103,6 +105,16 @@ void signal_stop(int sig)
     proc->wait_event = (proc->wait_event & ~WAIT_CONTINUED) | WAIT_STOPPED;
     signal_notify_parent(proc);
 
+    /* the whole process stops: its other threads stop on their way back
+     * to user mode (signal_take()); those running on other CPUs go there
+     * now, and the sleeping ones when they wake up */
+    queue_for (node, &proc->threads) {
+        struct thread *thread = node->value;
+
+        if (thread != curthread)
+            sched_thread_kick(thread);
+    }
+
     while (proc->stopped)
         waitq_sleep_unint(&proc->stop_queue);
 }
@@ -129,13 +141,44 @@ static int signal_ignored(struct proc *proc, int sig)
                                   sig_default_action[sig] == SIGACT_CONTINUE);
 }
 
+/** Removes signals from what is pending on a process and its threads. */
+static void signal_discard(struct proc *proc, sigset_t set)
+{
+    proc->sig_pending &= ~set;
+
+    queue_for (node, &proc->threads)
+        ((struct thread *) node->value)->sig_pending &= ~set;
+}
+
+/** Makes a thread take its signals soon: wakes it up if it sleeps where a
+ * signal may end the sleep, or interrupts it if it runs on another CPU. */
+static void signal_wake(struct thread *thread)
+{
+    if (thread->state == ISLEEP && thread->waitq)
+        thread_wakeup(thread);
+    else
+        sched_thread_kick(thread);
+}
+
+/** Says whether a thread would take `sig` now: it's alive, and doesn't
+ * block it or waits for it (sigtimedwait()). */
+static int signal_takes(struct thread *thread, int sig)
+{
+    sigset_t bit = 1UL << sig;
+
+    return thread->state != ZOMBIE && !thread->killed &&
+           (!(thread->sigmask & bit) || (thread->sig_waiting & bit));
+}
+
 /**
- * Sends a signal to a process: makes it pending, and if the process
- * doesn't block it, wakes up its sleeping threads so that one takes it on
- * its way back to user mode. Returns 0, `-EINVAL` for a bad signal, or
- * `-EPERM` for process 0.
+ * Sends a signal to a process, or to one of its threads: makes it pending,
+ * and wakes up a thread that would take it on its way back to user mode.
+ * A process's signal goes to a thread waiting for it in `sigtimedwait()`
+ * first, else to the first one that doesn't block it; if they all do, it
+ * stays pending until one unblocks it. Returns 0, `-EINVAL` for a bad
+ * signal, or `-EPERM` for process 0.
  */
-static int signal_to(struct proc *proc, int signal)
+static int signal_to(struct proc *proc, struct thread *target, int signal)
 {
     if (signal < 0 || signal > SIG_MAX)
         return -EINVAL;
@@ -152,9 +195,9 @@ static int signal_to(struct proc *proc, int signal)
     /* a stop signal cancels a pending SIGCONT and the other way around;
      * SIGCONT (whatever its action) and SIGKILL resume a stopped process */
     if (is_stop_signal(signal)) {
-        proc->sig_pending &= ~(1UL << SIGCONT);
+        signal_discard(proc, 1UL << SIGCONT);
     } else if (signal == SIGCONT || signal == SIGKILL) {
-        proc->sig_pending &= ~STOP_SIGNALS;
+        signal_discard(proc, STOP_SIGNALS);
 
         if (proc->stopped) {
             proc->stopped = 0;
@@ -173,21 +216,46 @@ static int signal_to(struct proc *proc, int signal)
     if (signal_ignored(proc, signal))
         return 0;
 
+    /* a thread's own signal: it takes it, unless it blocks it */
+    if (target) {
+        if (target->state == ZOMBIE || target->killed)
+            return 0;
+
+        target->sig_pending |= 1UL << signal;
+
+        if (signal_takes(target, signal))
+            signal_wake(target);
+
+        return 0;
+    }
+
     proc->sig_pending |= 1UL << signal;
 
-    /* a blocked signal waits; otherwise the threads sleeping where a
-     * signal may end the sleep wake up, to return to user mode and take it */
-    if (proc->sigmask & (1UL << signal))
+    /* SIGKILL ends every thread: they all go */
+    if (signal == SIGKILL) {
+        queue_for (node, &proc->threads)
+            signal_wake(node->value);
+
         return 0;
+    }
+
+    /* one thread takes it: one waiting for it, else one not blocking it */
+    struct thread *taker = NULL;
 
     queue_for (node, &proc->threads) {
         struct thread *thread = node->value;
 
-        if (thread->state == ISLEEP && thread->waitq)
-            thread_wakeup(thread);
-        else
-            sched_thread_kick(thread);  /* one running on another CPU takes it now */
+        if (signal_takes(thread, signal) && (thread->sig_waiting & (1UL << signal))) {
+            taker = thread;
+            break;
+        }
+
+        if (!taker && signal_takes(thread, signal))
+            taker = thread;
     }
+
+    if (taker)
+        signal_wake(taker);
 
     return 0;
 }
@@ -201,7 +269,7 @@ static int signal_to(struct proc *proc, int signal)
 void signal_action_set(struct proc *proc, int sig)
 {
     if (signal_ignored(proc, sig))
-        proc->sig_pending &= ~(1UL << sig);
+        signal_discard(proc, 1UL << sig);
 }
 
 /**
@@ -209,32 +277,73 @@ void signal_action_set(struct proc *proc, int sig)
  * signal may end.
  *
  * @param thread  the thread
- * @return 1 if its process has a pending signal that it doesn't block, 0
- *         if not
+ * @return 1 if it or its process has a pending signal that it doesn't
+ *         block, or that it waits for (`sigtimedwait()`), 0 if not
  */
 int signal_interrupts(struct thread *thread)
 {
     struct proc *proc = thread->owner;
 
-    return proc && proc != kproc && (proc->sig_pending & ~proc->sigmask);
+    if (!proc || proc == kproc)
+        return 0;
+
+    sigset_t pending = thread->sig_pending | proc->sig_pending;
+
+    return !!(pending & (~thread->sigmask | thread->sig_waiting));
+}
+
+/** Takes signal `sig` off what is pending for a thread: its own, else its
+ * process's. */
+static void signal_unpend(struct thread *thread, int sig)
+{
+    if (thread->sig_pending & (1UL << sig))
+        thread->sig_pending &= ~(1UL << sig);
+    else
+        thread->owner->sig_pending &= ~(1UL << sig);
 }
 
 /**
- * Sends a signal that can't be blocked or ignored, such as the `SIGSEGV`
- * of a fault: if the process blocks or ignores it, it is unblocked and its
- * action reset to the default.
+ * Takes a pending signal of a set for a thread, blocked or not, for
+ * `sigtimedwait()`.
  *
- * @param proc    the process
+ * @param thread  the thread
+ * @param set     the signals it waits for
+ * @return the lowest numbered one pending, the thread's own before its
+ *         process's, or 0 if none is
+ */
+int signal_dequeue(struct thread *thread, sigset_t set)
+{
+    sigset_t ready = thread->sig_pending & set;
+
+    if (!ready)
+        ready = thread->owner->sig_pending & set;
+
+    if (!ready)
+        return 0;
+
+    int sig = __builtin_ctzl(ready);
+    signal_unpend(thread, sig);
+    return sig;
+}
+
+/**
+ * Sends a thread a signal that can't be blocked or ignored, such as the
+ * `SIGSEGV` of its fault: if the thread blocks it or the process ignores
+ * it, it is unblocked and its action reset to the default.
+ *
+ * @param thread  the thread
  * @param signal  the signal
  */
-void signal_force(struct proc *proc, int signal)
+void signal_force(struct thread *thread, int signal)
 {
-    if ((proc->sigmask & (1UL << signal)) || proc->sigaction[signal].sa_handler == SIG_IGN) {
-        proc->sigmask &= ~(1UL << signal);
+    struct proc *proc = thread->owner;
+
+    if ((thread->sigmask & (1UL << signal)) || proc->sigaction[signal].sa_handler == SIG_IGN) {
+        thread->sigmask &= ~(1UL << signal);
         proc->sigaction[signal].sa_handler = SIG_DFL;
     }
 
-    signal_to(proc, signal);
+    signal_to(proc, thread, signal);
 }
 
 /**
@@ -252,26 +361,33 @@ void signal_exit(int sig)
 }
 
 /**
- * Takes the current process's pending signals, on the way back to user
- * mode: ignored ones are dropped, and default actions are carried out
- * (ending or stopping the process), until one with a handler is found.
+ * Takes the current thread's pending signals, its own and its process's,
+ * on the way back to user mode: ignored ones are dropped, and default
+ * actions are carried out (ending or stopping the process), until one
+ * with a handler is found. A thread of a stopped process stops here
+ * until it is continued.
  *
  * @return a signal whose handler the architecture runs now, or 0 if there
  *         is none
  */
 int signal_take(void)
 {
+    struct thread *thread = curthread;
     struct proc *proc = curproc;
 
     for (;;) {
-        sigset_t ready = proc->sig_pending & ~proc->sigmask;
+        /* another thread stopped the process */
+        while (proc->running && proc->stopped)
+            waitq_sleep_unint(&proc->stop_queue);
+
+        sigset_t ready = (thread->sig_pending | proc->sig_pending) & ~thread->sigmask;
 
         if (!proc->running || !ready)
             return 0;
 
         /* SIGKILL first, then the lowest numbered signal */
         int sig = (ready & (1UL << SIGKILL)) ? SIGKILL : __builtin_ctzl(ready);
-        proc->sig_pending &= ~(1UL << sig);
+        signal_unpend(thread, sig);
 
         uintptr_t handler = proc->sigaction[sig].sa_handler;
 
@@ -309,7 +425,21 @@ int signal_take(void)
  */
 int signal_proc_send(struct proc *proc, int signal)
 {
-    return signal_to(proc, signal);
+    return signal_to(proc, NULL, signal);
+}
+
+/**
+ * Sends a signal to one thread (for `pthread_kill()`, or a signal that its
+ * own action raised, such as `SIGPIPE`): that thread takes it, once it
+ * doesn't block it.
+ *
+ * @param thread  the thread
+ * @param signal  the signal (0 only checks that the thread exists)
+ * @return 0, `-EINVAL` for a bad signal, or `-EPERM` for process 0
+ */
+int signal_thread_send(struct thread *thread, int signal)
+{
+    return signal_to(thread->owner, thread, signal);
 }
 
 /**
@@ -322,7 +452,7 @@ int signal_proc_send(struct proc *proc, int signal)
 int signal_pgrp_send(struct pgroup *pg, int signal)
 {
     queue_for (node, pg->procs)
-        signal_to(node->value, signal);
+        signal_to(node->value, NULL, signal);
 
     return 0;
 }
@@ -348,7 +478,7 @@ int signal_send(pid_t pid, int signal)
         if (!proc)
             return -ESRCH;
 
-        return signal_to(proc, signal);
+        return signal_to(proc, NULL, signal);
     }
 
     if (pid == -1) {
@@ -360,7 +490,7 @@ int signal_send(pid_t pid, int signal)
             if (proc->pid == 1 || proc == curproc || proc == kproc)
                 continue;
 
-            signal_to(proc, signal);
+            signal_to(proc, NULL, signal);
             found = 1;
         }
 
@@ -377,7 +507,7 @@ int signal_send(pid_t pid, int signal)
             continue;
 
         found = 1;
-        signal_to(proc, signal);
+        signal_to(proc, NULL, signal);
     }
 
     return found ? 0 : -ESRCH;

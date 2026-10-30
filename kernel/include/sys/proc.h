@@ -142,13 +142,12 @@ struct proc {
     /** threads waiting in thread_join() sleep here */
     struct waitq thread_join;
 
-    /** its pending signals, a bit (1 << sig) each: a signal sent again
-     *  while it's pending is delivered once (POSIX leaves this to us, and
-     *  everyone does it) */
+    /** the signals pending on the process (kill()), a bit (1 << sig)
+     *  each, which any of its threads that doesn't block one may take; a
+     *  signal sent again while it's pending is delivered once (POSIX
+     *  leaves this to us, and everyone does it). Each thread has its own
+     *  pending signals and mask too (struct thread) */
     sigset_t sig_pending;
-
-    /** its blocked signals, a bit (1 << sig) each */
-    sigset_t sigmask;
 
     /** a parent waiting for a child (waitpid()) sleeps here */
     struct waitq wait_queue;

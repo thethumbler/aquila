@@ -297,7 +297,7 @@ long sys_send(struct aquila_socket_io_args *us)
     /* a connection that can't send anymore raises SIGPIPE too, as write()
      * does (not with MSG_NOSIGNAL) */
     if (ret == -EPIPE && !(flags & MSG_NOSIGNAL))
-        signal_proc_send(curproc, SIGPIPE);
+        signal_thread_send(curthread, SIGPIPE);
 
     return ret;
 }

@@ -112,8 +112,12 @@
 #define SYS_getsockopt      93
 #define SYS_setsockopt      94
 #define SYS_sigreturn       95  /* from the kernel's sigcode, a handler's return */
+#define SYS_thread_kill     96
+#define SYS_thread_detach   97
+#define SYS_sigtimedwait    98
+#define SYS_sigpending      99
 
-#define SYS_MAX             95
+#define SYS_MAX             99
 
 /*
  * Arguments of the older system calls that take more than three, passed
@@ -166,6 +170,11 @@ struct aquila_thread_args {
     uintptr_t uentry;   /* user function */
     uintptr_t arg;
     uintptr_t attr;
+    uintptr_t alive;    /* an int the kernel sets to 0 once the thread is
+                         * gone and off its stack, or 0 for none */
 };
+
+/* SYS_sigtimedwait: the timeout is a struct aquila_timespec, or NULL to
+ * wait for as long as it takes */
 
 #endif /* ! _AQUILA_SYSCALL_H */

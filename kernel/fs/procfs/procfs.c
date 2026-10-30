@@ -356,7 +356,6 @@ static ssize_t procfs_proc_status(int pid, off_t off, size_t size, void *buf)
             "gid: %d\n"
             "heap: 0x%x\n"
             "threads_nr: %d\n"
-            "sigmask: 0x%x\n"
             "sigpending: 0x%x\n",
             proc->name,
             proc->pid,
@@ -367,12 +366,12 @@ static ssize_t procfs_proc_status(int pid, off_t off, size_t size, void *buf)
             proc->gid,
             proc->heap,
             proc->threads.count,
-            (unsigned) proc->sigmask,
             (unsigned) proc->sig_pending
             );
 
     /* what each thread is doing: running (or ready to), sleeping (ISLEEP,
-     * signals wake it) or waiting (USLEEP), and with a deadline */
+     * signals wake it) or waiting (USLEEP), and with a deadline; and its
+     * signal mask and own pending signals */
     static const char *states[] = {"running", "sleeping", "waiting", "zombie"};
 
     queue_for (node, &proc->threads) {
@@ -381,12 +380,13 @@ static ssize_t procfs_proc_status(int pid, off_t off, size_t size, void *buf)
                             states[thread->state] : "?";
 
         sz += snprintf(status_buf + sz, sizeof(status_buf) - sz,
-                "thread %d%s%s: %s%s%s%s\n", thread->tid,
+                "thread %d%s%s: %s%s%s%s, sigmask 0x%x, sigpending 0x%x\n", thread->tid,
                 thread->name ? " " : "", thread->name ? thread->name : "", state,
                 thread->waitq ? " on a queue" : "",
                 list_linked(&thread->timer_link) ? " with a deadline" : "",
                 list_linked(&thread->run_link) && !thread->waitq ? " (ready)" :
-                    thread == curthread ? " (current)" : "");
+                    thread == curthread ? " (current)" : "",
+                (unsigned) thread->sigmask, (unsigned) thread->sig_pending);
     }
 
     if (off < sz) {

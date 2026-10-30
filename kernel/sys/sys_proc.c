@@ -278,9 +278,12 @@ long sys_uname(struct utsname *name)
  * Makes a new thread in the calling process (for `pthread_create()`), and
  * makes it ready to run.
  *
+ * The new thread starts with the caller's signal mask, and nothing
+ * pending.
+ *
  * @param __uthread  the arguments, in user memory: the thread's stack,
  *                   the C library's start, the thread's function and its
- *                   argument
+ *                   argument, and the int to clear once it's gone
  * @return the new thread's ID, or a negative errno: `-EFAULT`, `-EINVAL`
  *         (it would start past user space), `-ENOMEM`
  */
@@ -309,6 +312,10 @@ long sys_thread_create(struct aquila_thread_args *__uthread)
     if (a.entry >= UACCESS_LIMIT)
         return -EINVAL;
 
+    if (a.alive && uaccess_check((void *) a.alive, sizeof(int))) {
+        return -EFAULT;
+    }
+
     int err = 0;
     struct thread *thread = NULL;
 
@@ -316,14 +323,18 @@ long sys_thread_create(struct aquila_thread_args *__uthread)
         return err;
     }
 
+    thread->alive = a.alive;
+
     sched_thread_ready(thread);
     return thread->tid;
 }
 
 /**
  * Ends the calling thread (for `pthread_exit()`). It stays as a zombie
- * until another thread joins it. The last live thread ending ends the
- * process. It doesn't return.
+ * until another thread joins it, unless it is detached: then it is freed
+ * at once. The last live thread ending ends the process. Its `alive` int,
+ * if it has one, is set to 0: it no longer uses its stack. It doesn't
+ * return.
  *
  * @param value_ptr  the value that `thread_join()` returns
  * @return nothing: it doesn't return
@@ -346,13 +357,25 @@ long sys_thread_exit(void *value_ptr)
     if (!alive)
         sys_exit(0);
 
+    /* it's off its user stack: the C library may free it (a failed write
+     * is the program's business) */
+    if (curthread->alive) {
+        int zero = 0;
+        copyout((void *) curthread->alive, &zero, sizeof(zero));
+    }
+
     /* wake up the threads waiting to join one */
     waitq_wakeup(&owner->thread_join);
 
-    /* The thread stays on its process's list as a zombie, freed by
-     * thread_join() or when the process ends. Its kernel stack, which this
+    /* A detached thread leaves its process now, and is freed with its
+     * kernel stack. Otherwise it stays on the list as a zombie, freed by
+     * thread_join() or when the process ends. The kernel stack, which this
      * runs on, is freed from the idle stack by arch_cur_thread_kill(). */
-    curthread->state = ZOMBIE;
+    if (curthread->detached)
+        queue_remove(&owner->threads, curthread);
+    else
+        curthread->state = ZOMBIE;
+
     arch_cur_thread_kill();
 
     /* not reached: the thread is gone */
@@ -375,26 +398,32 @@ long sys_thread_join(int tid, void **value_ptr)
     syscall_log(LOG_DEBUG, "thread_join(tid=%d, value_ptr=%p)\n", tid, value_ptr);
 
     struct proc *owner = curproc;
-    struct thread *thread = NULL;
+    struct thread *thread;
 
-    queue_for (node, &owner->threads) {
-        struct thread *_thread = node->value;
-        if (_thread->tid == tid)
-            thread = _thread;
-    }
+    /* it's looked up again after each wait: another thread may have
+     * joined or detached it meanwhile */
+    for (;;) {
+        thread = thread_find(owner, tid);
 
-    /* no such thread, or it was joined already */
-    if (!thread) {
-        return -ESRCH;
-    }
+        /* no such thread, or it was joined already */
+        if (!thread) {
+            return -ESRCH;
+        }
 
-    /* a thread joining itself would wait forever */
-    if (thread == curthread) {
-        return -EDEADLK;
-    }
+        /* a thread joining itself would wait forever */
+        if (thread == curthread) {
+            return -EDEADLK;
+        }
 
-    while (thread->state != ZOMBIE) {
-        if (waitq_sleep(&curproc->thread_join)) {
+        /* no one joins a detached thread */
+        if (thread->detached) {
+            return -EINVAL;
+        }
+
+        if (thread->state == ZOMBIE)
+            break;
+
+        if (waitq_sleep(&owner->thread_join)) {
             return -ERESTARTSYS;
         }
     }
@@ -410,6 +439,43 @@ long sys_thread_join(int tid, void **value_ptr)
     kfree(thread);
 
     return joined;
+}
+
+/**
+ * Detaches a thread of the calling process (for `pthread_detach()`): no
+ * one will join it, and it is freed as soon as it exits, or now if it
+ * has already.
+ *
+ * @param tid  the thread's ID
+ * @return 0, or a negative errno: `-ESRCH` (no such thread, or joined
+ *         already), `-EINVAL` (detached already)
+ */
+long sys_thread_detach(int tid)
+{
+    syscall_log(LOG_DEBUG, "thread_detach(tid=%d)\n", tid);
+
+    struct proc *owner = curproc;
+    struct thread *thread = thread_find(owner, tid);
+
+    if (!thread) {
+        return -ESRCH;
+    }
+
+    if (thread->detached) {
+        return -EINVAL;
+    }
+
+    thread->detached = 1;
+
+    /* gone already: free what is left of it, as thread_join() would; the
+     * threads waiting to join it fail with EINVAL */
+    if (thread->state == ZOMBIE) {
+        queue_remove(&owner->threads, thread);
+        kfree(thread);
+    }
+
+    waitq_wakeup(&owner->thread_join);
+    return 0;
 }
 
 /**

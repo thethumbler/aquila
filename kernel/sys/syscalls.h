@@ -114,6 +114,7 @@ long sys_uname(struct utsname *name);
 long sys_thread_create(struct aquila_thread_args *__uthread);
 long sys_thread_exit(void *value_ptr);
 long sys_thread_join(int tid, void **value_ptr);
+long sys_thread_detach(int tid);
 long sys_setpgid(pid_t pid, pid_t pgid);
 long sys_setuid(uid_t uid);
 long sys_setgid(gid_t gid);
@@ -132,10 +133,14 @@ long sys_sethostname(const char *name, size_t len);
 
 /* sys_signal.c: signals, timers, sleeping and the clocks */
 long sys_kill(pid_t pid, int sig);
+long sys_thread_kill(int tid, int sig);
+long sys_sigtimedwait(const sigset_t *set, struct aquila_siginfo *info,
+                      const struct aquila_timespec *timeout);
 long sys_sigaction(int sig, const struct aquila_sigaction *act, struct aquila_sigaction *oact);
 long sys_gettimeofday(struct timeval *tv, struct timezone *tz);
 long sys_sigmask(int how, const sigset_t *set, sigset_t *oldset);
 long sys_sigsuspend(const sigset_t *set);
+long sys_sigpending(sigset_t *set);
 long sys_sigreturn(void);
 long sys_setitimer(int which, const struct aquila_itimer *new, struct aquila_itimer *old);
 long sys_nanosleep(const struct aquila_timespec *req, struct aquila_timespec *rem);

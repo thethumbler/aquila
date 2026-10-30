@@ -607,7 +607,7 @@ long sys_write(int fd, void *buf, size_t nbytes)
      * with EPIPE if the signal is caught or ignored (it is delivered on
      * the way back to user mode, after the result is set) */
     if (ret == -EPIPE)
-        signal_proc_send(curproc, SIGPIPE);
+        signal_thread_send(curthread, SIGPIPE);
 
     return ret;
 }

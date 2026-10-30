@@ -106,9 +106,9 @@ long sys_select(struct aquila_select_args *args)
      * when this returns, or goes in the handler's frame (as in
      * sigsuspend()) */
     if (sigmask) {
-        curthread->sig_oldmask = curproc->sigmask;
+        curthread->sig_oldmask = curthread->sigmask;
         curthread->sig_oldmask_set = 1;
-        curproc->sigmask = mask & ~SIG_UNMASKABLE;
+        curthread->sigmask = mask & ~SIG_UNMASKABLE;
     }
 
     int64_t ns = a.timeout ? (int64_t) timeout.tv_sec * 1000000000 + timeout.tv_usec * 1000 : -1;
@@ -166,7 +166,7 @@ long sys_select(struct aquila_select_args *args)
     }
 
     if (sigmask) {
-        curproc->sigmask = curthread->sig_oldmask;
+        curthread->sigmask = curthread->sig_oldmask;
         curthread->sig_oldmask_set = 0;
     }
 
