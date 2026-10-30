@@ -21,7 +21,7 @@
 # QEMU uses KVM when /dev/kvm can be used, KVM=0 in the environment turns
 # it off.
 #
-# tests: ata cpu syscalls memory oom kvmem fuzz clock irq smp net tcp ext2 minix libc system disk
+# tests: ata cpu syscalls memory oom kvmem fuzz clock irq smp net tcp ext2 minix fscache libc system disk
 # tcc curl bash; aarch64, oom and fuzz (-a aarch64)
 # (default: all)
 #
@@ -39,7 +39,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TESTS=$ROOT/tests
 
-ALL_TESTS="ata cpu syscalls memory oom kvmem fuzz clock irq smp net tcp ext2 minix libc system disk tcc curl bash"
+ALL_TESTS="ata cpu syscalls memory oom kvmem fuzz clock irq smp net tcp ext2 minix fscache libc system disk tcc curl bash"
 
 ARCH=x86_64
 build=1
@@ -58,7 +58,7 @@ KCC=gcc
 
 # tests that measure time (a tick's rate, the clock against the host's,
 # threads running at once) or use much memory: never beside others
-SERIAL_TESTS="clock irq smp memory"
+SERIAL_TESTS="clock irq smp memory fscache"
 
 while getopts "a:C:c:j:k:nvh" opt; do
     case $opt in
@@ -853,6 +853,35 @@ PY
     echo "$(grep -a -c '^PASS' "$log") passed, fsck.minix clean"
 }
 
+# file reads and writes, timed (tests/fscache/init.c): an ext2 disk with
+# 4 KiB blocks (128 MiB) and tmpfs; a file read again comes from the page
+# cache, tmpfs writes don't copy the file each time
+test_fscache()
+{
+    local img=$OUT/fscache/disk.img
+    local log=$OUT/fscache/serial.log
+
+    if ! command -v mke2fs >/dev/null; then
+        echo "SKIP: mke2fs not found"
+        return 0
+    fi
+
+    rm -f "$img"
+    mke2fs -q -t ext2 -b 4096 -F "$img" 128M || return 1
+
+    run_qemu "$log" 120 'aqtest: done' -initrd "$OUT/fscache/initrd.img" \
+        -drive file="$img",format=raw,index=0,media=disk
+
+    local result
+    result=$(aqtest_result "$log") || { echo "$result"; return 1; }
+
+    # the numbers, in MB/s
+    local n
+    n() { grep -a "^bench $1 " "$log" | awk '{ printf "%d", $3 / 1024 }'; }
+    echo "$result; ext2 reads $(n ext2.read-4k) MB/s from the disk, $(n ext2.read-4k-again) MB/s again (cached);" \
+         "tmpfs writes $(n tmpfs.write-4k) MB/s"
+}
+
 # C library: errno, signals, stat and library functions through newlib
 test_libc()
 {
@@ -1278,7 +1307,7 @@ needed=" $selected "
 case "$needed" in *" ata "*|*" smp "*) needed="$needed cpu " ;; esac
 [ -x "$CROSS_CC" ] || needed=${needed/ libc / }
 
-for name in cpu syscalls memory oom kvmem fuzz clock irq smp net tcp ext2 minix libc aarch64; do
+for name in cpu syscalls memory oom kvmem fuzz clock irq smp net tcp ext2 minix fscache libc aarch64; do
     case "$needed" in
         *" $name "*)
             mkdir -p "$OUT/$name"
