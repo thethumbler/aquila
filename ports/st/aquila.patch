@@ -1,6 +1,17 @@
 diff -ruN a/config.def.h b/config.def.h
 --- a/config.def.h
 +++ b/config.def.h
+@@ -5,8 +5,8 @@
+  *
+  * font: see http://freedesktop.org/software/fontconfig/fontconfig-user.html
+  */
+-static char *font = "Liberation Mono:pixelsize=12:antialias=true:autohint=true";
+-static int borderpx = 2;
++static char *font = "Martian Mono:pixelsize=14:antialias=true:autohint=true";
++static int borderpx = 8;
+ 
+ /*
+  * What program is execed by st depends of these precedence rules:
 @@ -74,7 +74,7 @@
  static int bellvolume = 0;
  
@@ -10,6 +21,93 @@ diff -ruN a/config.def.h b/config.def.h
  
  /*
   * spaces per tab
+@@ -94,34 +94,66 @@
+ unsigned int tabspaces = 8;
+ 
+ /* Terminal colors (16 first used in escape sequence) */
++/*
++ * AquilaOS: the palette of aquilaos.com, dark (here) and light (below,
++ * when AQUILA_THEME is "light": aquila-theme sets it). The ANSI colours
++ * are muted to sit with it; the defaults are its paper, text and accent.
++ */
+ static const char *colorname[] = {
+ 	/* 8 normal colors */
+-	"black",
+-	"red3",
+-	"green3",
+-	"yellow3",
+-	"blue2",
+-	"magenta3",
+-	"cyan3",
+-	"gray90",
++	"#232120",
++	"#c7675a",
++	"#8fa36b",
++	"#d4b26a",
++	"#6f8fb3",
++	"#a87ba8",
++	"#6fa39e",
++	"#cfccc4",
+ 
+ 	/* 8 bright colors */
+-	"gray50",
+-	"red",
+-	"green",
+-	"yellow",
+-	"#5c5cff",
+-	"magenta",
+-	"cyan",
+-	"white",
++	"#6f6d66",
++	"#e08a7c",
++	"#adc08a",
++	"#e6cb8e",
++	"#93afcf",
++	"#c49ac4",
++	"#93c1bc",
++	"#e8e5de",
+ 
+ 	[255] = 0,
+ 
+ 	/* more colors can be added after 255 to use with DefaultXX */
+-	"#cccccc",
+-	"#555555",
+-	"gray90", /* default foreground colour */
+-	"black", /* default background colour */
++	"#d19a6c", /* cursor: the accent */
++	"#9a978f",
++	"#cfccc4", /* default foreground colour */
++	"#191917", /* default background colour */
++};
++
++static const char *colorname_light[] = {
++	"#2a2824",
++	"#a8453a",
++	"#5f7a3a",
++	"#9a6f1e",
++	"#3f6491",
++	"#7f4f84",
++	"#3c7a74",
++	"#dddbd3",
++
++	"#6f6d66",
++	"#c25a4c",
++	"#73904a",
++	"#b5862b",
++	"#5079ab",
++	"#98649c",
++	"#4d928b",
++	"#f4f1ec",
++
++	[255] = 0,
++
++	"#a2643a",
++	"#6f6d66",
++	"#3d3b35",
++	"#fcfcfa",
+ };
+ 
+ 
 diff -ruN a/st.c b/st.c
 --- a/st.c
 +++ b/st.c
@@ -22,3 +120,20 @@ diff -ruN a/st.c b/st.c
   #include <pty.h>
  #elif defined(__OpenBSD__) || defined(__NetBSD__) || defined(__APPLE__)
   #include <util.h>
+diff -ruN a/x.c b/x.c
+--- a/x.c
++++ b/x.c
+@@ -2091,6 +2091,13 @@
+ 	if (!opt_title)
+ 		opt_title = (opt_line || !opt_cmd) ? "st" : opt_cmd[0];
+ 
++	/* AquilaOS: the light palette */
++	const char *theme = getenv("AQUILA_THEME");
++	if (theme && !strcmp(theme, "light")) {
++		for (size_t i = 0; i < LEN(colorname_light); i++)
++			colorname[i] = colorname_light[i];
++	}
++
+ 	setlocale(LC_CTYPE, "");
+ 	XSetLocaleModifiers("");
+ 	cols = MAX(cols, 1);
