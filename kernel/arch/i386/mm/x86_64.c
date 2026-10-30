@@ -125,6 +125,31 @@ static uint64_t *pte_get(struct pmap *pmap, vaddr_t va, int make)
     return &t[IDX(va, 0)];
 }
 
+/** Returns the page table entry that maps `va` in `pmap`, or NULL if a
+ * table on the way is missing (or it's in the direct map's large pages).
+ * Sets `*next` to the next address to look at: past the range a missing
+ * table would map, so that a walk over a large range that is mostly
+ * empty skips it a table at a time, not a page at a time. */
+static uint64_t *pte_find(struct pmap *pmap, vaddr_t va, vaddr_t *next)
+{
+    uint64_t *t = table(pmap->map);
+
+    for (int level = 3; level > 0; --level) {
+        uint64_t e = t[IDX(va, level)];
+
+        if (!(e & PG_PRESENT) || (e & PG_LARGE)) {
+            vaddr_t span = 1ULL << (12 + 9 * level);
+            *next = (va & ~(span - 1)) + span;
+            return NULL;
+        }
+
+        t = table(PG_ADDR(e));
+    }
+
+    *next = va + PAGE_SIZE;
+    return &t[IDX(va, 0)];
+}
+
 /*
  * Switches the running CPU to an address space's page tables.
  */
@@ -330,8 +355,8 @@ void pmap_remove(struct pmap *pmap, vaddr_t sva, vaddr_t eva)
 
     vaddr_t first = eva, last = sva;
 
-    for (vaddr_t va = sva; va < eva; va += PAGE_SIZE) {
-        uint64_t *pte = pte_get(pmap, va, 0);
+    for (vaddr_t va = sva, next; va < eva && va >= sva; va = next) {
+        uint64_t *pte = pte_find(pmap, va, &next);
 
         if (pte && (*pte & PG_PRESENT)) {
             *pte = 0;
@@ -394,8 +419,8 @@ void pmap_protect(struct pmap *pmap, vaddr_t sva, vaddr_t eva, uint32_t prot)
 
     vaddr_t first = eva, last = sva;
 
-    for (vaddr_t va = sva; va < eva; va += PAGE_SIZE) {
-        uint64_t *pte = pte_get(pmap, va, 0);
+    for (vaddr_t va = sva, next; va < eva && va >= sva; va = next) {
+        uint64_t *pte = pte_find(pmap, va, &next);
 
         if (pte && (*pte & PG_PRESENT)) {
             *pte = PG_ADDR(*pte) | pte_flags(prot);

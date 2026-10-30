@@ -199,7 +199,9 @@ int mm_map(struct pmap *pmap, paddr_t paddr, vaddr_t vaddr, size_t size, int fla
 }
 
 /**
- * Unmaps every page of a range of an address space.
+ * Unmaps every page of a range of an address space. The page tables are
+ * walked once (`pmap_remove()`), which skips what has no table: a large
+ * range with few pages mapped takes little time.
  *
  * @param pmap   the address space's page tables
  * @param vaddr  the range's start
@@ -207,15 +209,7 @@ int mm_map(struct pmap *pmap, paddr_t paddr, vaddr_t vaddr, size_t size, int fla
  */
 void mm_unmap_full(struct pmap *pmap, vaddr_t vaddr, size_t size)
 {
-    vaddr_t start = PAGE_ALIGN(vaddr);
-    vaddr_t end   = PAGE_ROUND(vaddr + size);
-
-    size_t nr = (end - start)/PAGE_SIZE;
-
-    while (nr--) {
-        mm_page_unmap(pmap, start);
-        start += PAGE_SIZE;
-    }
+    pmap_remove(pmap, PAGE_ALIGN(vaddr), PAGE_ROUND(vaddr + size));
 }
 
 /*
