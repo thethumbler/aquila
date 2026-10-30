@@ -88,16 +88,29 @@ static void rng_seed(struct rng *r, uint64_t seed)
  */
 
 /* scratch memory, mapped by itself so that what the kernel writes into
- * it reaches nothing of the fuzzer's: the structures' fields, a socket
- * address, a buffer, then a page with nothing mapped after it (guard) */
+ * it reaches nothing of the fuzzer's: the structures' fields (a page),
+ * a socket address, a buffer, then a page with nothing mapped after it
+ * (guard) */
 #define NWORDS      512
 #define BUF_SIZE    65536
-#define SCRATCH     (NWORDS * sizeof(uptr) + 4096 + BUF_SIZE)
+#define SCRATCH     (4096 + 4096 + BUF_SIZE)
+
+/* pages of their own for mprotect() and munmap() to cut up (the calls
+ * may read and write them too), far below the fuzzer's memory, which
+ * mmap() puts under the stack: the lengths of a few GiB the calls are
+ * given end before it, or past user space */
+#define ARENA_PAGES 16
+#if defined(__x86_64__) || defined(__aarch64__)
+#define ARENA       0x100000000000ul
+#else
+#define ARENA       0x40000000ul
+#endif
 
 static uptr *words;             /* a structure's worth of random values */
 static char *sockaddr;          /* 4096 bytes */
 static char *buf;               /* BUF_SIZE bytes */
 static char *guard;             /* buf's last page: none after it */
+static char *arena;             /* ARENA_PAGES pages */
 static char longpath[8192];
 static int fds[NFDS];
 static int nfds;
@@ -155,7 +168,7 @@ static int dangerous_dev(uptr dev)
 
 enum {
     A_ANY, A_INT, A_LEN, A_FD, A_PTR, A_PATH, A_STRUCT, A_ADDR, A_MODE,
-    A_FLAGS, A_PID, A_SIG, A_DEV, A_IOCTL, A_NKINDS,
+    A_FLAGS, A_PID, A_SIG, A_DEV, A_IOCTL, A_PAGE, A_PROT, A_NKINDS,
 };
 
 static uptr arg(struct rng *r, int kind);
@@ -212,6 +225,7 @@ static uptr a_ptr(struct rng *r)
     case 8: return (uptr) aq_main;                          /* read-only */
     case 9: return (uptr) -1;
     case 10: return (uptr) rnd(r);
+    case 11: return (uptr) arena + rndn(r, ARENA_PAGES * 4096);
     default: return (uptr) &buf[rndn(r, BUF_SIZE)];
     }
 }
@@ -346,6 +360,9 @@ static uptr arg(struct rng *r, int kind)
     case A_SIG:     return rndn(r, 8) ? rndn(r, 34) : a_int(r);
     case A_DEV:     return rndn(r, 8) ? devs[rndn(r, sizeof(devs) / sizeof(devs[0]))] : a_int(r);
     case A_IOCTL:   return ioctls[rndn(r, sizeof(ioctls) / sizeof(ioctls[0]))];
+    /* a page of the arena, or just before or after it */
+    case A_PAGE:    return (uptr) arena + ((long) rndn(r, ARENA_PAGES + 2) - 1) * 4096;
+    case A_PROT:    return rndn(r, 8) ? rndn(r, 8) : a_int(r);
     }
 
     return 0;
@@ -458,6 +475,16 @@ static const struct call calls[] = {
     {SYS_sigtimedwait,  {A_STRUCT, A_PTR, A_STRUCT}},
     {SYS_sigpending,    {A_PTR}},
     {SYS_sigaltstack,   {A_STRUCT, A_PTR}},
+    {SYS_mprotect,      {A_PAGE, A_LEN, A_PROT}},
+    {SYS_mprotect,      {A_PAGE, A_LEN, A_PROT}},
+    {SYS_munmap,        {A_PAGE, A_LEN}},
+    {SYS_pread,         {A_FD, A_PTR, A_LEN, A_ANY}},
+    {SYS_pwrite,        {A_FD, A_PTR, A_LEN, A_ANY}},
+    {SYS_socketpair,    {A_INT, A_INT, A_INT, A_PTR}},
+    {SYS_pipe2,         {A_PTR, A_FLAGS}},
+    {SYS_dup3,          {A_FD, A_FD, A_FLAGS}},
+    {SYS_sched_yield},
+    {SYS_clock_nanosleep, {A_INT, A_INT, A_STRUCT, A_PTR}},
     {0,                 {A_ANY, A_ANY, A_ANY, A_ANY, A_ANY}},   /* any number */
 };
 
@@ -532,12 +559,12 @@ static void fuzz(struct rng *r, unsigned long n)
         /* rarely, the calls that usually end the worker (a handler at a
          * random address the next signal jumps to, a sigreturn without a
          * frame, a thread starting at a random address, its memory
-         * unmapped) or wait for good: the calls after them are what's
-         * tested */
+         * unmapped; not the arena's) or wait for good: the calls after
+         * them are what's tested */
         if ((nr == SYS_sigreturn || nr == SYS_sigaction || nr == SYS_sigsuspend ||
              nr == SYS_thread_create || nr == SYS_thread_exit || nr == SYS_kill ||
              nr == SYS_thread_kill ||
-             nr == SYS_munmap || nr == SYS_sbrk) && rndn(r, 32))
+             (nr == SYS_munmap && c->args[0] != A_PAGE) || nr == SYS_sbrk) && rndn(r, 32))
             continue;
 
         if (!nr) {
@@ -624,9 +651,19 @@ static void scratch_map(void)
     SC(SYS_munmap, p + SCRATCH, 4096, 0);
 
     words = (uptr *) p;
-    sockaddr = p + NWORDS * sizeof(uptr);
+    sockaddr = p + 4096;
     buf = sockaddr + 4096;
     guard = buf + BUF_SIZE - 4096;
+
+    m.addr  = (void *) ARENA;
+    m.len   = ARENA_PAGES * 4096;
+    m.flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+
+    if (SC(SYS_mmap, &m, &arena, 0) || !arena)
+        SC(SYS_exit, 1, 0, 0);
+
+    for (int i = 0; i < ARENA_PAGES; ++i)
+        arena[i * 4096] = i;
 }
 
 static void open_fd(long fd)

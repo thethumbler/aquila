@@ -37,6 +37,10 @@
  *   bytes stay, a buffer running into it is used up to it
  * - virtual terminals: KD* and VT_* ioctls, switching, VT_PROCESS
  * - a terminal's output modes (ONLCR, ONLRET, ONOCR, OCRNL)
+ * - parts of mappings: mprotect() and munmap() split them, across a fork
+ *   too, and leave nothing behind
+ * - pread and pwrite, pipe2, dup3, socketpair, sched_yield and
+ *   clock_nanosleep
  */
 
 #include "../lib/aqtest.h"
@@ -1149,6 +1153,7 @@ static void orphans(void)
 /* lseek's whence, as POSIX numbers them */
 #define SEEK_SET    0
 #define SEEK_CUR    1
+#define SEEK_END    2
 
 static int ofile_pipe[2];
 static volatile int ofile_read = -100;
@@ -1499,6 +1504,404 @@ static void wait_and_mount(void)
     check("mount: not root, EPERM", aq_child_status(child_mounts_as_user) >> 8, EPERM);
 }
 
+/*
+ * Parts of mappings: mprotect() and munmap() on some of a mapping's pages
+ * split it, and what each part has stays its own. The pages are checked
+ * from children: an access that isn't allowed kills one with SIGSEGV.
+ */
+
+#define PG 4096
+
+static volatile char *part_page;
+static void part_read(void) { (void) *part_page; }
+static void part_write(void) { *part_page = 1; }
+
+/* how a child that reads (or writes) `page` ends: SIGSEGV, or 0x42 */
+static int part_access(volatile char *page, int write)
+{
+    part_page = page;
+    int st = aq_child_status(write ? part_write : part_read);
+    return (st & 0x7f) ? (st & 0x7f) : st >> 8;
+}
+
+static volatile char *part_map(int pages)
+{
+    void *m = 0;
+    struct aquila_mmap_args a = {0, pages * PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0};
+
+    if (SC(SYS_mmap, &a, &m, 0))
+        return 0;
+
+    for (int i = 0; i < pages; ++i)
+        ((volatile char *) m)[i * PG] = 'a' + i;
+
+    return m;
+}
+
+/* a number in /proc/meminfo, after "key: ", or -1 if it isn't there */
+static long meminfo(const char *key)
+{
+    static char buf[512];
+    int fd = SC(SYS_open, "/proc/meminfo", O_RDONLY, 0);
+    int n = SC(SYS_read, fd, buf, sizeof(buf) - 1);
+    SC(SYS_close, fd, 0, 0);
+
+    for (int i = 0; i < n; ++i) {
+        int k = 0;
+
+        while (key[k] && buf[i + k] == key[k])
+            ++k;
+
+        if (!key[k]) {
+            long v = 0;
+
+            for (char *c = &buf[i + k]; *c >= '0' && *c <= '9'; ++c)
+                v = v * 10 + (*c - '0');
+
+            return v;
+        }
+    }
+
+    return -1;
+}
+
+/* mappings split, forked, protected and unmapped in pieces, then gone */
+static void part_churn(void)
+{
+    volatile char *p = part_map(8);
+    int pp[2], st;
+
+    SC(SYS_pipe, pp, 0, 0);
+    int c = SC(SYS_fork, 0, 0, 0);
+
+    if (!c) {
+        char x;
+        SC(SYS_read, pp[0], &x, 1);
+        SC(SYS_mprotect, p + 2 * PG, PG, PROT_READ);
+        SC(SYS_munmap, p + 5 * PG, PG, 0);
+        p[7 * PG] = 'c';
+        SC(SYS_exit, 0, 0, 0);
+    }
+
+    for (int i = 0; i < 8; i += 2)
+        SC(SYS_mprotect, p + i * PG, PG, i & 2 ? PROT_NONE : PROT_READ);
+    SC(SYS_write, pp[1], "x", 1);
+    SC(SYS_munmap, p + 3 * PG, 2 * PG, 0);
+    SC(SYS_waitpid, c, &st, 0);
+    SC(SYS_munmap, p, 8 * PG, 0);
+    SC(SYS_close, pp[0], 0, 0);
+    SC(SYS_close, pp[1], 0, 0);
+}
+
+static void mapping_parts(void)
+{
+    /* bad arguments */
+    volatile char *p = part_map(6);
+    check("mprotect: mmap", p != 0, 1);
+    check("mprotect unaligned", SC(SYS_mprotect, p + 1, PG, PROT_READ), -EINVAL);
+    check("mprotect bad prot", SC(SYS_mprotect, p, PG, 0x100), -EINVAL);
+    check("mprotect len 0", SC(SYS_mprotect, p, 0, PROT_READ), 0);
+    check("mprotect kernel", SC(SYS_mprotect, KADDR, PG, PROT_READ), -ENOMEM);
+    check("munmap unaligned", SC(SYS_munmap, p + 1, PG, 0), -EINVAL);
+    check("munmap kernel", SC(SYS_munmap, KADDR, PG, 0), -EINVAL);
+
+    /* the stack, and the heap, can't be split or unmapped */
+    char local;
+    uptr sp = (uptr) &local & ~(uptr) (PG - 1);
+    check("mprotect part of the stack", SC(SYS_mprotect, sp, PG, PROT_READ | PROT_WRITE), -EINVAL);
+    check("munmap part of the stack", SC(SYS_munmap, sp, PG, 0), -EINVAL);
+    uptr brk = SC(SYS_sbrk, 0, 0, 0);
+    check("munmap the heap", SC(SYS_munmap, (brk - 1) & ~(uptr) (PG - 1), PG, 0), -EINVAL);
+
+    /* the first and last pages unmapped: the others stay */
+    check("munmap a mapping's first page", SC(SYS_munmap, p, PG, 0), 0);
+    check("munmap a mapping's last page", SC(SYS_munmap, p + 5 * PG, PG, 0), 0);
+    check("first page gone", part_access(p, 0), SIGSEGV);
+    check("last page gone", part_access(p + 5 * PG, 0), SIGSEGV);
+    check("the pages between stay", p[PG] == 'b' && p[2 * PG] == 'c' && p[3 * PG] == 'd' && p[4 * PG] == 'e', 1);
+    check("munmap nothing mapped", SC(SYS_munmap, p, PG, 0), 0);
+
+    /* a range not all mapped: ENOMEM, and nothing changes */
+    check("mprotect over a hole", SC(SYS_mprotect, p, 2 * PG, PROT_READ), -ENOMEM);
+    check("mprotect over a hole: no change", part_access(p + PG, 1), 0x42);
+
+    /* a page read-only, then none, then back */
+    check("mprotect a page read-only", SC(SYS_mprotect, p + 2 * PG, PG, PROT_READ), 0);
+    check("read-only page: read", part_access(p + 2 * PG, 0), 0x42);
+    check("read-only page: write", part_access(p + 2 * PG, 1), SIGSEGV);
+    check("read-only page: the ones beside it written", part_access(p + PG, 1) == 0x42 &&
+          part_access(p + 3 * PG, 1) == 0x42, 1);
+    check("mprotect a page PROT_NONE", SC(SYS_mprotect, p + 3 * PG, PG, PROT_NONE), 0);
+    check("PROT_NONE page: read", part_access(p + 3 * PG, 0), SIGSEGV);
+    check("mprotect back", SC(SYS_mprotect, p + 2 * PG, 2 * PG, PROT_READ | PROT_WRITE), 0);
+    p[2 * PG] = 'C';
+    check("pages back: kept, and writable", p[2 * PG] == 'C' && p[3 * PG] == 'd', 1);
+
+    /* a page out of the middle */
+    check("munmap a middle page", SC(SYS_munmap, p + 2 * PG, PG, 0), 0);
+    check("middle page gone", part_access(p + 2 * PG, 0), SIGSEGV);
+    check("the pages beside it stay", p[PG] == 'b' && p[3 * PG] == 'd' && p[4 * PG] == 'e', 1);
+    check("mprotect over the hole", SC(SYS_mprotect, p + PG, 3 * PG, PROT_READ), -ENOMEM);
+    check("munmap over the hole", SC(SYS_munmap, p, 6 * PG, 0), 0);
+    check("all gone", part_access(p + PG, 0) == SIGSEGV && part_access(p + 4 * PG, 0) == SIGSEGV, 1);
+
+    /* split after a fork: each process keeps its own pages, copy on
+     * write; the child's mapping doesn't change with the parent's */
+    p = part_map(4);
+    int pp[2], st;
+    SC(SYS_pipe, pp, 0, 0);
+    int c = SC(SYS_fork, 0, 0, 0);
+    if (!c) {
+        char x;
+        SC(SYS_read, pp[0], &x, 1);
+        int ok = p[0] == 'a' && p[PG] == 'b' && p[2 * PG] == 'c' && p[3 * PG] == 'd';
+        p[PG] = 'x';
+        p[2 * PG] = 'y';
+        SC(SYS_exit, ok && p[PG] == 'x' && p[2 * PG] == 'y', 0, 0);
+    }
+    SC(SYS_mprotect, p + PG, PG, PROT_READ);
+    SC(SYS_munmap, p + 2 * PG, PG, 0);
+    p[0] = 'P';
+    p[3 * PG] = 'Q';
+    SC(SYS_write, pp[1], "x", 1);
+    SC(SYS_waitpid, c, &st, 0);
+    check("split after fork: the child's pages", st >> 8, 1);
+    check("split after fork: the parent's pages", p[0] == 'P' && p[PG] == 'b' && p[3 * PG] == 'Q', 1);
+    SC(SYS_mprotect, p + PG, PG, PROT_READ | PROT_WRITE);
+    p[PG] = 'B';
+    check("split after fork: written again", p[PG], 'B');
+    SC(SYS_munmap, p, 4 * PG, 0);
+    SC(SYS_close, pp[0], 0, 0);
+    SC(SYS_close, pp[1], 0, 0);
+
+    /* a file's mapping split: each part reads its own part of the file */
+    int mf = SC(SYS_open, "/tmp/parts", O_CREAT | O_RDWR, 0644);
+    for (int i = 0; i < 3; ++i) {
+        SC(SYS_lseek, mf, i * PG, SEEK_SET);
+        SC(SYS_write, mf, "123" + i, 1);
+    }
+    void *fm = 0;
+    struct aquila_mmap_args fa = {0, 3 * PG, PROT_READ, MAP_PRIVATE, mf, 0};
+    check("split file mapping: mmap", SC(SYS_mmap, &fa, &fm, 0), 0);
+    p = fm;
+    check("split file mapping: mprotect", SC(SYS_mprotect, p + PG, PG, PROT_READ | PROT_WRITE), 0);
+    p[PG + 1] = 'w';
+    check("split file mapping: each part its own", p[0] == '1' && p[PG] == '2' && p[PG + 1] == 'w' && p[2 * PG] == '3', 1);
+    SC(SYS_munmap, p, 3 * PG, 0);
+    SC(SYS_close, mf, 0, 0);
+    SC(SYS_unlink, "/tmp/parts", 0, 0);
+
+    /* all that leaves nothing behind */
+    check("mount procfs", aq_mount("procfs", "/proc", 0), 0);
+    part_churn();
+    long objs = meminfo("KVMemObjCnt: "), free = meminfo("MemFree: ");
+    for (int i = 0; i < 20; ++i)
+        part_churn();
+    check("split mappings leave no kernel objects behind", meminfo("KVMemObjCnt: "), objs);
+    check("split mappings leave no pages behind", meminfo("MemFree: "), free);
+}
+
+/*
+ * pread() and pwrite(), pipe2(), dup3(), socketpair(), sched_yield() and
+ * clock_nanosleep()
+ */
+
+static void at_offset(void)
+{
+    char b[16] = {0};
+    int f = SC(SYS_open, "/tmp/at", O_CREAT | O_RDWR, 0644);
+    SC(SYS_write, f, "0123456789", 10);
+    SC(SYS_lseek, f, 2, SEEK_SET);
+
+    check("pread", SC5(SYS_pread, f, b, 3, 5, 0) == 3 && b[0] == '5' && b[2] == '7', 1);
+    check("pread: the offset doesn't move", SC(SYS_lseek, f, 0, SEEK_CUR), 2);
+    check("pwrite", SC5(SYS_pwrite, f, "ab", 2, 8, 0), 2);
+    check("pwrite: the offset doesn't move", SC(SYS_lseek, f, 0, SEEK_CUR), 2);
+    check("pread what pwrite wrote", SC5(SYS_pread, f, b, 16, 0, 0) == 10 && b[7] == '7' && b[8] == 'a', 1);
+    check("pread at the end", SC5(SYS_pread, f, b, 16, 10, 0), 0);
+    check("pwrite past the end", SC5(SYS_pwrite, f, "z", 1, 19, 0) == 1 &&
+          SC(SYS_lseek, f, 0, SEEK_END) == 20, 1);
+    check("pread negative offset", SC5(SYS_pread, f, b, 1, -1, 0), -EINVAL);
+    check("pread kaddr", SC5(SYS_pread, f, KADDR, 1, 0, 0), -EFAULT);
+    check("pread bad fd", SC5(SYS_pread, 99, b, 1, 0, 0), -EBADF);
+
+    /* an end past what a size holds on 32 bits: an error, not a buffer
+     * of a few bytes (found by the fuzz test) */
+    check("pwrite near 2 GiB, 2 GiB of data", SC5(SYS_pwrite, f, b, 0x80000010ul, 0x7FFFFFFF, 0) < 0, 1);
+    check("pwrite near 2 GiB: the file as it was", SC(SYS_lseek, f, 0, SEEK_END), 20);
+    SC(SYS_close, f, 0, 0);
+
+    /* O_APPEND doesn't apply: the data goes at the offset */
+    f = SC(SYS_open, "/tmp/at", O_RDWR | O_APPEND, 0);
+    SC5(SYS_pwrite, f, "A", 1, 0, 0);
+    check("pwrite O_APPEND: at the offset", SC5(SYS_pread, f, b, 1, 0, 0) == 1 && b[0] == 'A' &&
+          SC(SYS_lseek, f, 0, SEEK_END) == 20, 1);
+    SC(SYS_close, f, 0, 0);
+
+    f = SC(SYS_open, "/tmp/at", O_WRONLY, 0);
+    check("pread write-only", SC5(SYS_pread, f, b, 1, 0, 0), -EBADF);
+    SC(SYS_close, f, 0, 0);
+    SC(SYS_unlink, "/tmp/at", 0, 0);
+
+    int p[2];
+    SC(SYS_pipe, p, 0, 0);
+    check("pread pipe", SC5(SYS_pread, p[0], b, 1, 0, 0), -ESPIPE);
+    check("pwrite pipe", SC5(SYS_pwrite, p[1], "x", 1, 0, 0), -ESPIPE);
+    SC(SYS_close, p[0], 0, 0);
+    SC(SYS_close, p[1], 0, 0);
+}
+
+static void new_descriptors(void)
+{
+    int p[2], q[2];
+    char b[4];
+
+    check("pipe2 bad flags", SC(SYS_pipe2, p, O_APPEND, 0), -EINVAL);
+    check("pipe2 kaddr", SC(SYS_pipe2, KADDR, 0, 0), -EFAULT);
+    check("pipe2", SC(SYS_pipe2, p, O_NONBLOCK | O_CLOEXEC, 0), 0);
+    check("pipe2 O_NONBLOCK", SC(SYS_read, p[0], b, 1), -EAGAIN);
+    check("pipe2 O_NONBLOCK, both ends", (SC(SYS_fcntl, p[1], F_GETFL, 0) & O_NONBLOCK) != 0, 1);
+    check("pipe2 O_CLOEXEC", SC(SYS_fcntl, p[0], F_GETFD, 0) == FD_CLOEXEC &&
+          SC(SYS_fcntl, p[1], F_GETFD, 0) == FD_CLOEXEC, 1);
+    check("pipe2 no flags", SC(SYS_pipe2, q, 0, 0) == 0 && SC(SYS_fcntl, q[0], F_GETFD, 0) == 0, 1);
+
+    check("dup3 same fd", SC(SYS_dup3, p[0], p[0], 0), -EINVAL);
+    check("dup3 bad flags", SC(SYS_dup3, p[0], 20, O_NONBLOCK), -EINVAL);
+    check("dup3 newfd out of range", SC(SYS_dup3, p[0], 9999, 0), -EBADF);
+    check("dup3 oldfd not open", SC(SYS_dup3, 99, 20, 0), -EBADF);
+    check("dup3 O_CLOEXEC", SC(SYS_dup3, q[0], 20, O_CLOEXEC) == 20 &&
+          SC(SYS_fcntl, 20, F_GETFD, 0) == FD_CLOEXEC, 1);
+    SC(SYS_write, q[1], "d", 1);
+    check("dup3: the same open file", SC(SYS_read, 20, b, 1) == 1 && b[0] == 'd', 1);
+
+    /* over an open descriptor: what it referred to is closed, here the
+     * only write end of p, so p's reader sees the end */
+    check("dup3 over an open descriptor", SC(SYS_dup3, q[0], p[1], 0), p[1]);
+    check("dup3: the old file closed", SC(SYS_read, p[0], b, 1), 0);
+    check("dup3: not O_CLOEXEC", SC(SYS_fcntl, p[1], F_GETFD, 0), 0);
+
+    SC(SYS_close, 20, 0, 0);
+    for (int i = 0; i < 2; ++i) {
+        SC(SYS_close, p[i], 0, 0);
+        SC(SYS_close, q[i], 0, 0);
+    }
+}
+
+static void socket_pairs(void)
+{
+    int sv[2];
+    char b[8];
+
+    check("socketpair kaddr", SC5(SYS_socketpair, AF_UNIX, SOCK_STREAM, 0, KADDR, 0), -EFAULT);
+    check("socketpair AF_INET", SC5(SYS_socketpair, AF_INET, SOCK_STREAM, 0, sv, 0), -EOPNOTSUPP);
+    check("socketpair bad domain", SC5(SYS_socketpair, 77, SOCK_STREAM, 0, sv, 0), -EAFNOSUPPORT);
+    check("socketpair datagram", SC5(SYS_socketpair, AF_UNIX, SOCK_DGRAM, 0, sv, 0), -EPROTONOSUPPORT);
+    check("socketpair", SC5(SYS_socketpair, AF_UNIX, SOCK_STREAM, 0, sv, 0), 0);
+    check("socketpair one way", SC(SYS_write, sv[0], "hi", 2) == 2 &&
+          SC(SYS_read, sv[1], b, 8) == 2 && b[0] == 'h', 1);
+    check("socketpair the other way", SC(SYS_write, sv[1], "yo", 2) == 2 &&
+          SC(SYS_read, sv[0], b, 8) == 2 && b[0] == 'y', 1);
+    check("socketpair O_RDWR", SC(SYS_fcntl, sv[0], F_GETFL, 0) & O_ACCMODE, O_RDWR);
+
+    /* between processes */
+    int c = SC(SYS_fork, 0, 0, 0), st;
+    if (!c) {
+        SC(SYS_close, sv[0], 0, 0);
+        SC(SYS_exit, SC(SYS_write, sv[1], "child", 5), 0, 0);
+    }
+    SC(SYS_waitpid, c, &st, 0);
+    check("socketpair to a child", SC(SYS_read, sv[0], b, 8) == 5 && b[0] == 'c' && st >> 8 == 5, 1);
+
+    /* one side shut for reading, the other closed: the first is still
+     * there to use, the connection isn't freed under it */
+    struct aquila_sigaction ign = {1 /* SIG_IGN */, 0, 0}, dfl = {0, 0, 0};
+    SC(SYS_sigaction, SIGPIPE, &ign, 0);
+    check("socketpair shutdown SHUT_RD", SC(SYS_shutdown, sv[0], SHUT_RD, 0), 0);
+    check("socketpair close the other", SC(SYS_close, sv[1], 0, 0), 0);
+    check("socketpair: write to a closed peer", SC(SYS_write, sv[0], "x", 1), -EPIPE);
+    check("socketpair: close the last side", SC(SYS_close, sv[0], 0, 0), 0);
+
+    /* the end, once the other side is closed */
+    SC5(SYS_socketpair, AF_UNIX, SOCK_STREAM, 0, sv, 0);
+    SC(SYS_write, sv[1], "z", 1);
+    SC(SYS_close, sv[1], 0, 0);
+    check("socketpair: what was left, then the end", SC(SYS_read, sv[0], b, 8) == 1 &&
+          SC(SYS_read, sv[0], b, 8) == 0, 1);
+    check("socketpair: a closed peer, EPIPE", SC(SYS_write, sv[0], "x", 1), -EPIPE);
+    SC(SYS_close, sv[0], 0, 0);
+    SC(SYS_sigaction, SIGPIPE, &dfl, 0);
+
+    check("socketpair SOCK_NONBLOCK | SOCK_CLOEXEC",
+          SC5(SYS_socketpair, AF_UNIX, SOCK_STREAM | O_NONBLOCK | O_CLOEXEC, 0, sv, 0), 0);
+    check("socketpair SOCK_NONBLOCK", SC(SYS_read, sv[0], b, 1), -EAGAIN);
+    check("socketpair SOCK_CLOEXEC", SC(SYS_fcntl, sv[1], F_GETFD, 0), FD_CLOEXEC);
+    SC(SYS_close, sv[0], 0, 0);
+    SC(SYS_close, sv[1], 0, 0);
+}
+
+static void clock_sleeps(void)
+{
+    struct aquila_timespec ts = {0, 0}, now;
+
+    check("sched_yield", SC(SYS_sched_yield, 0, 0, 0), 0);
+
+    check("clock_nanosleep bad clock", SC5(SYS_clock_nanosleep, 3, 0, &ts, 0, 0), -EINVAL);
+    check("clock_nanosleep bad flags", SC5(SYS_clock_nanosleep, CLOCK_MONOTONIC, 1, &ts, 0, 0), -EINVAL);
+    check("clock_nanosleep kaddr", SC5(SYS_clock_nanosleep, CLOCK_MONOTONIC, 0, KADDR, 0, 0), -EFAULT);
+    ts.tv_nsec = 1000000000;
+    check("clock_nanosleep bad nsec", SC5(SYS_clock_nanosleep, CLOCK_MONOTONIC, 0, &ts, 0, 0), -EINVAL);
+    ts.tv_nsec = 0;
+    ts.tv_sec = (uint64_t) -1;
+    check("clock_nanosleep negative", SC5(SYS_clock_nanosleep, CLOCK_MONOTONIC, 0, &ts, 0, 0), -EINVAL);
+    check("nanosleep negative", SC(SYS_nanosleep, &ts, 0, 0), -EINVAL);
+
+    ts = (struct aquila_timespec) {0, 50000000};
+    int t = now_ms();
+    check("clock_nanosleep 50 ms", SC5(SYS_clock_nanosleep, CLOCK_MONOTONIC, 0, &ts, 0, 0), 0);
+    check("clock_nanosleep 50 ms: slept", now_ms() - t >= 49, 1);
+
+    /* until a time: the monotonic clock's, then the real time clock's */
+    SC(SYS_clock_gettime, CLOCK_MONOTONIC, &ts, 0);
+    ts.tv_nsec += 50000000;
+    if (ts.tv_nsec >= 1000000000) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000;
+    }
+    check("clock_nanosleep TIMER_ABSTIME", SC5(SYS_clock_nanosleep, CLOCK_MONOTONIC, AQUILA_TIMER_ABSTIME, &ts, 0, 0), 0);
+    SC(SYS_clock_gettime, CLOCK_MONOTONIC, &now, 0);
+    check("clock_nanosleep TIMER_ABSTIME: woke up then", now.tv_sec > ts.tv_sec ||
+          (now.tv_sec == ts.tv_sec && now.tv_nsec >= ts.tv_nsec), 1);
+
+    t = now_ms();
+    check("clock_nanosleep TIMER_ABSTIME past", SC5(SYS_clock_nanosleep, CLOCK_MONOTONIC, AQUILA_TIMER_ABSTIME, &ts, 0, 0), 0);
+    check("clock_nanosleep TIMER_ABSTIME past: no sleep", now_ms() - t < 10, 1);
+
+    SC(SYS_clock_gettime, CLOCK_REALTIME, &ts, 0);
+    ts.tv_sec += 1;
+    t = now_ms();
+    check("clock_nanosleep TIMER_ABSTIME real time", SC5(SYS_clock_nanosleep, CLOCK_REALTIME, AQUILA_TIMER_ABSTIME, &ts, 0, 0), 0);
+    check("clock_nanosleep TIMER_ABSTIME real time: slept", now_ms() - t >= 990, 1);
+
+    /* a handler ends it: EINTR, and the time left */
+    struct aquila_sigaction sa = {(uptr) alarm_handler, 0, 0}, dfl = {0, 0, 0};
+    struct aquila_itimer it = {20000000, 0};
+    struct aquila_timespec rem = {0, 0};
+    SC(SYS_sigaction, SIGALRM, &sa, 0);
+    SC(SYS_setitimer, AQUILA_ITIMER_REAL, &it, 0);
+    ts = (struct aquila_timespec) {2, 0};
+    check("clock_nanosleep interrupted", SC5(SYS_clock_nanosleep, CLOCK_MONOTONIC, 0, &ts, &rem, 0), -EINTR);
+    check("clock_nanosleep interrupted: the time left", rem.tv_sec == 1 && rem.tv_nsec > 500000000, 1);
+    SC(SYS_sigaction, SIGALRM, &dfl, 0);
+}
+
+static void posix_calls(void)
+{
+    at_offset();
+    new_descriptors();
+    socket_pairs();
+    clock_sleeps();
+}
+
 void aq_main(void)
 {
     script_interpreter();
@@ -1752,7 +2155,7 @@ void aq_main(void)
     check("mmap anonymous copied by fork", ast >> 8, 1);
     check("mmap anonymous private", anon[0], 'p');
     check("munmap anonymous", SC(SYS_munmap, anon, 100, 0), 0);
-    check("munmap again", SC(SYS_munmap, anon, 100, 0), -EINVAL);
+    check("munmap again: nothing there, not an error", SC(SYS_munmap, anon, 100, 0), 0);
     aa.flags = MAP_SHARED | MAP_ANONYMOUS;
     check("mmap anonymous shared", SC(SYS_mmap, &aa, &mret, 0), -EINVAL);
     aa.flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
@@ -1884,6 +2287,9 @@ void aq_main(void)
     SC(SYS_munmap, mapped, 4096, 0);
     SC(SYS_close, mf, 0, 0);
     SC(SYS_unlink, "/tmp/mapped", 0, 0);
+
+    mapping_parts();
+    posix_calls();
 
     /* O_APPEND: every write at the end, wherever the offset was moved */
     char ab[8] = {0};
@@ -2493,14 +2899,22 @@ void aq_main(void)
     SC(SYS_kill, c, SIGKILL, 0);
     check("kill a stopped process", SC(SYS_waitpid, c, &st, 0) == c && (st & 0x7f) == SIGKILL, 1);
 
-    /* a caught SIGTSTP doesn't stop */
+    /* a caught SIGTSTP doesn't stop. The child says when its handler is
+     * set: before, the signal would be discarded (init's process group is
+     * orphaned), and the child would spin for ever */
+    int tp[2];
+    SC(SYS_pipe, tp, 0, 0);
     c = SC(SYS_fork, 0, 0, 0);
     if (!c) {
         struct aquila_sigaction tsa = {(uptr) sigtstp_handler, 0, 0};
         SC(SYS_sigaction, SIGTSTP, &tsa, 0);
+        SC(SYS_write, tp[1], "r", 1);
         spin_forever();
     }
-    aq_spin(10000000);
+    char tr;
+    SC(SYS_read, tp[0], &tr, 1);
+    SC(SYS_close, tp[0], 0, 0);
+    SC(SYS_close, tp[1], 0, 0);
     SC(SYS_kill, c, SIGTSTP, 0);
     SC(SYS_waitpid, c, &st, WUNTRACED);
     check("SIGTSTP handler", st, 9 << 8);

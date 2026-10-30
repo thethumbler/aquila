@@ -11,6 +11,9 @@
  * Reports in the aqtest format on the serial port.
  */
 
+/* pipe2() and dup3() */
+#define _GNU_SOURCE
+
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -26,6 +29,7 @@
 #include <pthread.h>
 #include <pty.h>
 #include <pwd.h>
+#include <sched.h>
 #include <shadow.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -1172,6 +1176,164 @@ static void test_pthread_signals(void)
           before > 0 && WIFSIGNALED(st) && stopped == 0 && after > 0, 1);
 }
 
+/* a thread that runs off the end of its stack: the guard page below
+ * it faults (SEGV_ACCERR, where nothing mapped would be SEGV_MAPERR),
+ * and the handler, on the thread's alternate stack, says so */
+static void guard_handler(int sig, siginfo_t *info, void *ctx)
+{
+    _exit(info->si_code == SEGV_ACCERR ? 42 : 1);
+}
+
+static void *guard_none(void *arg)
+{
+    return arg;
+}
+
+static int deeper(int n)
+{
+    volatile char buf[512];
+    buf[0] = n;
+    return deeper(n + 1) + buf[0];
+}
+
+static void *guard_thread(void *arg)
+{
+    static char alt[8192];
+    stack_t ss = {.ss_sp = alt, .ss_size = sizeof(alt), .ss_flags = 0};
+    sigaltstack(&ss, NULL);
+    return (void *) (long) deeper(0);
+}
+
+/* mprotect(), pread() and pwrite(), pipe2(), dup3(), socketpair(),
+ * sched_yield(), clock_nanosleep(), and threads' guard pages */
+static void test_posix_calls(void)
+{
+    /* a page of three made read-only: a write faults, the others don't */
+    char *m = mmap(NULL, 3 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    m[4096] = 'm';
+    check("mprotect", mprotect(m + 4096, 4096, PROT_READ), 0);
+    struct sigaction fsa = {0}, dfl = {0};
+    fsa.sa_sigaction = fault_handler;
+    fsa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &fsa, NULL);
+    int jumped = sigsetjmp(fault_jmp, 1);
+    if (!jumped)
+        m[4096 + 5] = 1;
+    check("mprotect: a write faults, SEGV_ACCERR", jumped == SIGSEGV && fault_code == SEGV_ACCERR &&
+          fault_addr == m + 4096 + 5, 1);
+    sigaction(SIGSEGV, &dfl, NULL);
+    m[0] = m[2 * 4096] = 1;
+    check("mprotect back", mprotect(m, 3 * 4096, PROT_READ | PROT_WRITE), 0);
+    m[4096 + 5] = 1;
+    check("mprotect back: written, kept", m[4096] == 'm' && m[4096 + 5] == 1, 1);
+    errno = 0;
+    check("mprotect unaligned -> EINVAL", mprotect(m + 1, 4096, PROT_READ) == -1 ? errno : 0, EINVAL);
+    check("munmap a page of it", munmap(m + 4096, 4096), 0);
+    errno = 0;
+    check("mprotect a hole -> ENOMEM", mprotect(m, 3 * 4096, PROT_READ) == -1 ? errno : 0, ENOMEM);
+    munmap(m, 3 * 4096);
+
+    /* pread() and pwrite() don't move the offset */
+    char b[16] = {0};
+    int f = open("/tmp/at", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    write(f, "0123456789", 10);
+    lseek(f, 3, SEEK_SET);
+    check("pread", pread(f, b, 2, 6) == 2 && b[0] == '6' && b[1] == '7', 1);
+    check("pwrite", pwrite(f, "xy", 2, 0), 2);
+    check("pread and pwrite: the offset stays", lseek(f, 0, SEEK_CUR), 3);
+    check("read after them", read(f, b, 3) == 3 && b[0] == '3', 1);
+    errno = 0;
+    check("pread negative -> EINVAL", pread(f, b, 1, -5) == -1 ? errno : 0, EINVAL);
+    close(f);
+    unlink("/tmp/at");
+    int p[2];
+    pipe(p);
+    errno = 0;
+    check("pread pipe -> ESPIPE", pread(p[0], b, 1, 0) == -1 ? errno : 0, ESPIPE);
+    close(p[0]);
+    close(p[1]);
+
+    /* pipe2(), dup3(), and dup2() over an open descriptor */
+    check("pipe2", pipe2(p, O_CLOEXEC | O_NONBLOCK), 0);
+    check("pipe2 O_CLOEXEC", fcntl(p[0], F_GETFD), FD_CLOEXEC);
+    errno = 0;
+    check("pipe2 O_NONBLOCK", read(p[0], b, 1) == -1 ? errno : 0, EAGAIN);
+    check("dup3", dup3(p[1], 30, O_CLOEXEC), 30);
+    check("dup3 O_CLOEXEC", fcntl(30, F_GETFD), FD_CLOEXEC);
+    errno = 0;
+    check("dup3 same -> EINVAL", dup3(30, 30, 0) == -1 ? errno : 0, EINVAL);
+    check("dup2 same", dup2(30, 30), 30);
+    int q[2];
+    pipe(q);
+    check("dup2 over an open descriptor", dup2(q[1], 30), 30);
+    check("dup2: no O_CLOEXEC", fcntl(30, F_GETFD), 0);
+    write(30, "q", 1);
+    check("dup2: the new file", read(q[0], b, 1) == 1 && b[0] == 'q', 1);
+    for (int i = 0; i < 2; ++i) {
+        close(p[i]);
+        close(q[i]);
+    }
+    close(30);
+
+    /* socketpair(), its flags set by the kernel */
+    int sv[2];
+    check("socketpair", socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv), 0);
+    check("socketpair SOCK_CLOEXEC", fcntl(sv[0], F_GETFD) == FD_CLOEXEC && fcntl(sv[1], F_GETFD) == FD_CLOEXEC, 1);
+    check("socketpair send and recv", send(sv[1], "pair", 4, 0) == 4 && recv(sv[0], b, 16, 0) == 4 &&
+          !memcmp(b, "pair", 4), 1);
+    close(sv[0]);
+    close(sv[1]);
+
+    check("sched_yield", sched_yield(), 0);
+
+    /* clock_nanosleep() returns the error, errno stays */
+    struct timespec ts = {0, 20000000}, t0, t1;
+    errno = 0;
+    check("clock_nanosleep bad clock: the error returned", clock_nanosleep(99, 0, &ts, NULL), EINVAL);
+    check("clock_nanosleep: errno untouched", errno, 0);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    check("clock_nanosleep", clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL), 0);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    check("clock_nanosleep: slept", (t1.tv_sec - t0.tv_sec) * 1000000000L + t1.tv_nsec - t0.tv_nsec >= 20000000, 1);
+    ts = t1;
+    ts.tv_nsec += 20000000;
+    if (ts.tv_nsec >= 1000000000) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000;
+    }
+    check("clock_nanosleep TIMER_ABSTIME", clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL), 0);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    check("clock_nanosleep TIMER_ABSTIME: then", t1.tv_sec > ts.tv_sec ||
+          (t1.tv_sec == ts.tv_sec && t1.tv_nsec >= ts.tv_nsec), 1);
+
+    /* a thread's stack has a guard page */
+    pid_t c = fork();
+    if (!c) {
+        struct sigaction gsa = {0};
+        gsa.sa_sigaction = guard_handler;
+        gsa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        sigaction(SIGSEGV, &gsa, NULL);
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 16384);
+        pthread_t t;
+        pthread_create(&t, &attr, guard_thread, NULL);
+        pthread_join(t, NULL);
+        _exit(2);
+    }
+    int st = 0;
+    waitpid(c, &st, 0);
+    check("pthread: a stack overflow hits the guard page", WIFEXITED(st) ? WEXITSTATUS(st) : -WTERMSIG(st), 42);
+
+    /* stacks are mapped and unmapped: many threads, one after another */
+    int ok = 1;
+    for (int i = 0; i < 200 && ok; ++i) {
+        pthread_t t;
+        ok = !pthread_create(&t, NULL, guard_none, NULL) && !pthread_join(t, NULL);
+    }
+    check("pthread: 200 threads made and joined", ok, 1);
+}
+
 static void test_pthread(void)
 {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
@@ -1812,6 +1974,7 @@ int main(void)
     test_pthread();
     test_pthread_signals();
     test_siginfo();
+    test_posix_calls();
     test_tcp();
     test_err();
     test_resolver();
