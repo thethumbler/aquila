@@ -3,6 +3,7 @@
 
 #include <core/system.h>
 #include <core/printk.h>
+#include <ds/list.h>
 
 struct vm_space;
 struct vm_entry;
@@ -92,8 +93,9 @@ struct vm_entry {
 
 /** A vm object's pager: reads its pages in, and writes them out. */
 struct vm_pager {
-    /** reads in the page at `off`, or returns NULL */
-    struct vm_page *(*in)(struct vm_object *vm_object, size_t off);
+    /** reads in the page at `off` into `*page`: 0, `-ENOMEM` if there was
+     *  no memory, or `-EIO` if it couldn't be read */
+    int (*in)(struct vm_object *vm_object, size_t off, struct vm_page **page);
 
     /** writes out the page at `off` */
     int (*out)(struct vm_object *vm_object, size_t off);
@@ -144,6 +146,9 @@ struct vm_object {
 
     /** the pager's own data (a file's vnode) */
     void *p;
+
+    /** where a sequential read would read in next, for read-ahead */
+    size_t ra_next;
 };
 
 /** A page of physical memory (pages[] has one for every page of RAM). */
@@ -155,6 +160,10 @@ struct vm_page {
     size_t off; /**< its offset in its object or anon */
 
     size_t ref; /**< how many references it has */
+
+    /** a file's page: its place on the page cache's list, the page used
+     *  least recently first */
+    struct list_node lru;
 };
 
 /* The kernel's address space. */
@@ -190,10 +199,14 @@ void vm_anon_incref(struct vm_anon *vm_anon);
 void vm_anon_decref(struct vm_anon *vm_anon);
 void vm_anon_destroy(struct vm_anon *vm_anon);
 
-/* fs/vm_object.c and mm/vm_object.c: vm objects, and a file's pages */
+/* fs/vm_object.c and mm/vm_object.c: vm objects, and a file's pages (the
+ * page cache) */
 struct vm_object *vm_object_vnode(struct vnode *vnode);
 void vnode_pages_update(struct vnode *vnode, off_t start, off_t end);
 void vnode_pages_free(struct vnode *vnode);
+ssize_t vm_cache_read(struct vnode *vnode, off_t off, struct iobuf *io);
+size_t vm_cache_reclaim(size_t want);
+size_t vm_cache_pages(void);
 int  vm_object_page_insert(struct vm_object *vm_object, struct vm_page *vm_page);
 void vm_object_incref(struct vm_object *vm_object);
 void vm_object_decref(struct vm_object *vm_object);

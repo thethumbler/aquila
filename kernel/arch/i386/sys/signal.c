@@ -124,16 +124,17 @@ static int vm_page_eq(void *a, void *b)
     return ((struct vm_page *) a)->off == *(size_t *) b;
 }
 
-/** Makes the sigcode page, the first time a process touches it. The
- * object keeps it, and every process maps the same page. */
-static struct vm_page *sigcode_in(struct vm_object *vm_object, size_t off)
+/** Makes the sigcode page, the first time a process touches it, into
+ * `*page`: 0, or `-ENOMEM`. The object keeps it, and every process maps
+ * the same page. */
+static int sigcode_in(struct vm_object *vm_object, size_t off, struct vm_page **page)
 {
     char *buf = kmalloc(PAGE_SIZE, &M_BUFFER, M_ZERO);
     struct vm_page *vm_page = buf ? mm_page_alloc() : NULL;
 
     if (!vm_page) {
         kfree(buf);
-        return NULL;
+        return -ENOMEM;
     }
 
     memcpy(buf, sigcode, sizeof(sigcode));
@@ -146,10 +147,11 @@ static struct vm_page *sigcode_in(struct vm_object *vm_object, size_t off)
 
     if (vm_object_page_insert(vm_object, vm_page)) {
         mm_page_dealloc(vm_page->paddr);
-        return NULL;
+        return -ENOMEM;
     }
 
-    return vm_page;
+    *page = vm_page;
+    return 0;
 }
 
 static struct vm_pager sigcode_pager = {

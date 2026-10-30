@@ -311,7 +311,10 @@ struct fs ext2fs = {
         .trunc   = posix_file_trunc,
 
         .eof     = posix_file_eof,
-    }
+    },
+
+    /* its files are on a disk: read through the page cache */
+    .cached = 1,
 };
 
 MODULE_INIT(ext2, ext2_init, NULL)

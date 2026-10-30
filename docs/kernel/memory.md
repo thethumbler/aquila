@@ -60,8 +60,10 @@ Shortcuts:
   pages of those blocks that no reserved range covers
   (`buddy_reserved_done()`). The end of RAM is rounded down to 4 MiB:
   what's past it is lost.
-- There is no reclaiming: pages aren't swapped out, cached file pages
-  aren't dropped.
+- The only reclaiming is the page cache's: when no page is left,
+  `mm_page_alloc()` takes back the cached pages of files that nothing
+  maps, the ones used least recently first, and tries again (see
+  [The virtual filesystem](vfs.md)). Nothing is swapped out.
 
 **Out of memory is an error**, not a panic, as in xv6: `mm_page_alloc()`
 returns `NULL`, and each caller fails the way it can:
@@ -84,11 +86,14 @@ it. The `oom` test (`tests/oom/`) runs out of memory on purpose, from a
 page fault and from inside `read()`, three times each: the process is
 killed, the memory comes back, the system goes on.
 
-`/proc/meminfo` shows the total and what the allocator has left:
+`/proc/meminfo` shows the total, what the allocator has left, and how
+much of the rest is the page cache's (`Cached`, which comes back when
+it's needed):
 
 ```
 MemTotal: 261631 kB
 MemFree: 189219 kB
+Cached: 1208 kB
 KVMemUsed: 416 KB
 KVMemObjCnt: 48
 Slab: 612 kB
@@ -182,8 +187,9 @@ copy, see [Interrupts](interrupts.md)), then tries, in order:
    offset, a read maps it read-only, a write maps it writable if this
    region is its only user, or copies it first (*copy on write*).
 3. **The file behind the region** (`pf_object()`): the file's page is
-   looked up in its `vm_object`, read from the file if it isn't there yet
-   (`vnode_page_in()`). A read-only region maps it as it is, shared with
+   looked up in its `vm_object` (the page cache, which `read()` uses too),
+   read from the file if it isn't there yet (`vnode_page_in()`, with the
+   pages after it if the file is read in order). A read-only region maps it as it is, shared with
    every process that maps the file; a writable one gets a private copy,
    which goes into its `vm_anon`.
 4. **Nothing behind it** (`pf_zero()`): a new page, zeroed, goes into the

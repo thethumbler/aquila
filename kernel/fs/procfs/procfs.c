@@ -44,7 +44,9 @@ struct procfs_entry {
 struct vnode *procfs_root = NULL;
 struct vcache procfs_vcache = {0};
 
-/** Makes `/proc/meminfo`: the memory there is, and how it's used. */
+/** Makes `/proc/meminfo`: the memory there is, and how it's used (the
+ * page cache's, `Cached`, is part of what isn't free: it's given back
+ * when memory runs out). */
 static ssize_t procfs_meminfo(off_t off, size_t size, char *buf)
 {
     char meminfo_buf[512];
@@ -53,11 +55,13 @@ static ssize_t procfs_meminfo(off_t off, size_t size, char *buf)
     int sz = snprintf(meminfo_buf, 512, 
             "MemTotal: %d kB\n"
             "MemFree: %d kB\n"
+            "Cached: %d kB\n"
             "KVMemUsed: %d KB\n"
             "KVMemObjCnt: %d\n"
             "Slab: %d kB\n",
             (int) (k_total_mem/1024),
             (int) ((k_total_mem-k_used_mem)/1024),
+            (int) (vm_cache_pages() * (PAGE_SIZE / 1024)),
             (int) (kvmem_used/1024),
             (int) kvmem_obj_cnt,
             (int) (slab_used/1024)

@@ -64,8 +64,27 @@ size_t mm_page_ref(paddr_t paddr)
     return TRACKED(paddr) ? PAGE(paddr).ref : 0;
 }
 
+/* how many pages of the page cache to take back at a time, when there is
+ * no page of memory left */
+#define RECLAIM_BATCH   32
+
+/** Takes a free page from the buddy allocator: above 16 MiB, or below
+ * once there's none left there (nothing needs memory an ISA device can
+ * reach). Returns its address, or -1 if there's none. */
+static paddr_t page_take(void)
+{
+    paddr_t paddr = buddy_alloc(BUDDY_ZONE_NORMAL, PAGE_SIZE);
+
+    if (paddr == (paddr_t) -1)
+        paddr = buddy_alloc(BUDDY_ZONE_DMA, PAGE_SIZE);
+
+    return paddr;
+}
+
 /**
- * Allocates a free page of physical memory.
+ * Allocates a free page of physical memory. When none is left, the page
+ * cache gives some back first (`vm_cache_reclaim()`): the files' pages
+ * that nothing maps are memory that is only borrowed.
  *
  * Running out of memory is an error that the caller handles like any
  * other, not a panic: a process's page fault kills it, a system call
@@ -77,12 +96,10 @@ size_t mm_page_ref(paddr_t paddr)
  */
 struct vm_page *mm_page_alloc(void)
 {
-    /* a page above 16 MiB, or below once there's none left there (nothing
-     * needs memory an ISA device can reach) */
-    paddr_t paddr = buddy_alloc(BUDDY_ZONE_NORMAL, PAGE_SIZE);
+    paddr_t paddr = page_take();
 
-    if (paddr == (paddr_t) -1)
-        paddr = buddy_alloc(BUDDY_ZONE_DMA, PAGE_SIZE);
+    if (paddr == (paddr_t) -1 && vm_cache_reclaim(RECLAIM_BATCH))
+        paddr = page_take();
 
     if (paddr == (paddr_t) -1)
         return NULL;

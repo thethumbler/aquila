@@ -216,26 +216,26 @@ static inline int pf_anon(struct pf *pf)
     return err ? err : 1;
 }
 
-/** Returns an object's page at offset `off`, reading it in with the
- * object's pager if the object doesn't have it yet. Returns NULL if it
- * couldn't be read in (no memory, or a read error). */
-static inline struct vm_page *vm_object_page(struct vm_object *vm_object, hash_t hash, size_t off)
+/** Gets an object's page at offset `off` into `*vm_page`, reading it in
+ * with the object's pager if the object doesn't have it yet. Returns 0,
+ * `-ENOMEM` if there was no memory, or `-EIO` if it couldn't be read. */
+static inline int vm_object_page(struct vm_object *vm_object, hash_t hash, size_t off,
+                                 struct vm_page **vm_page)
 {
     struct hashmap_node *hash_node = hashmap_lookup(vm_object->pages, hash, &off);
-    struct vm_page *vm_page = NULL;
 
+    /* the object has the page */
     if (hash_node) {
-        /* the object has the page */
-        vm_page = (struct vm_page *) hash_node->entry;
-    } else {
-        /* it doesn't: page it in */
-        if (vm_object->pager && vm_object->pager->in)
-            vm_page = vm_object->pager->in(vm_object, off);
-        else
-            printk("vm: an object with no pager, page %p missing\n", (void *) off);
+        *vm_page = (struct vm_page *) hash_node->entry;
+        return 0;
     }
 
-    return vm_page;
+    /* it doesn't: page it in */
+    if (vm_object->pager && vm_object->pager->in)
+        return vm_object->pager->in(vm_object, off, vm_page);
+
+    printk("vm: an object with no pager, page %p missing\n", (void *) off);
+    return -EIO;
 }
 
 /**
@@ -243,8 +243,9 @@ static inline struct vm_page *vm_object_page(struct vm_object *vm_object, hash_t
  * page). A read-only mapping maps the object's page itself. A writable
  * one gets a copy, in the process's anon: what it writes is its own.
  *
- * Returns 1 if the fault is handled, or a negative errno (`-EIO` if the
- * page couldn't be read in).
+ * Returns 1 if the fault is handled, or a negative errno (`-ENOMEM` if
+ * there was no memory to read the page in, `-EIO` if it couldn't be
+ * read).
  */
 static inline int pf_object(struct pf *pf)
 {
@@ -255,14 +256,14 @@ static inline int pf_object(struct pf *pf)
     struct pmap *pmap = pf->vm_space->pmap;
 
     /* the object's page, read in if needed */
-    vm_page = vm_object_page(vm_object, pf->hash, pf->off);
+    int err = vm_object_page(vm_object, pf->hash, pf->off, &vm_page);
 
-    if (!vm_page)
-        return -EIO;
+    if (err)
+        return err;
 
     if (!(vm_entry->flags & VM_UW)) {
         /* a read-only mapping: map the object's page */
-        int err = mm_page_map(pmap, pf->addr, vm_page->paddr, vm_entry->flags & VM_PERM);
+        err = mm_page_map(pmap, pf->addr, vm_page->paddr, vm_entry->flags & VM_PERM);
 
         if (err)
             return err;
@@ -312,7 +313,7 @@ static inline int pf_object(struct pf *pf)
 
     /* if there's no memory for a page table, the copy is the anon's
      * already, and the next fault maps it */
-    int err = mm_page_map(pmap, pf->addr, new_page->paddr, vm_entry->flags & VM_PERM);
+    err = mm_page_map(pmap, pf->addr, new_page->paddr, vm_entry->flags & VM_PERM);
 
     return err ? err : 1;
 }

@@ -288,7 +288,10 @@ struct fs minixfs = {
         .trunc   = posix_file_trunc,
 
         .eof     = posix_file_eof,
-    }
+    },
+
+    /* its files are on a disk: read through the page cache */
+    .cached = 1,
 };
 
 MODULE_INIT(minix, minix_init, NULL)

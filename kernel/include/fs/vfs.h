@@ -106,6 +106,10 @@ struct fs {
 
     /* whether it needs no device (tmpfs, procfs) */
     int nodev;
+
+    /* whether reading its regular files goes through the page cache
+     * (fs/vm_object.c): its files are on a disk (ext2, minix) */
+    int cached;
 };
 
 /** A file in memory (a vnode): what its inode says, and the kernel's own
@@ -229,6 +233,7 @@ int     vfs_vget(struct vnode *super, ino_t ino, struct vnode **vnode);
 int     vfs_map(struct vm_space *vm_space, struct vm_entry *vm_entry);
 
 ssize_t vfs_read_io(struct vnode *vnode, off_t offset, struct iobuf *io);
+ssize_t vfs_read_raw(struct vnode *vnode, off_t offset, struct iobuf *io);
 ssize_t vfs_write_io(struct vnode *vnode, off_t offset, struct iobuf *io);
 
 /* The kernel's own reads and writes, with a kernel buffer */

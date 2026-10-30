@@ -61,19 +61,25 @@ static int slab_class(size_t size)
  * then `kmalloc()` returns NULL. */
 static struct slab *slab_page_alloc(void)
 {
+    /* the page first: getting one may free objects (the page cache gives
+     * memory back, see mm_page_alloc()), and slabs with them, which
+     * changes which pages of the region are free */
+    struct vm_page *vm_page = mm_page_alloc();
+
+    if (!vm_page)
+        return NULL;
+
     size_t i = slab_first_free;
 
     while (i < SLAB_PAGES && (slab_map[i / 8] & (1 << (i % 8))))
         ++i;
 
-    if (i >= SLAB_PAGES)
+    if (i >= SLAB_PAGES) {
+        mm_page_dealloc(vm_page->paddr);
         return NULL;
+    }
 
     vaddr_t vaddr = ARCH_SLAB_BASE + i * PAGE_SIZE;
-    struct vm_page *vm_page = mm_page_alloc();
-
-    if (!vm_page)
-        return NULL;
 
     if (pmap_add(kvm_space.pmap, vaddr, vm_page->paddr, VM_KRW)) {
         mm_page_dealloc(vm_page->paddr);

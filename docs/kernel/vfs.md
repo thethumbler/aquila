@@ -287,31 +287,57 @@ open file share the lock. The locks are advisory (only `flock()` looks at
 them), kept in one list, and released with `LOCK_UN` or when the open
 file is closed. There are no record locks (`fcntl(F_SETLK)`).
 
-## Mapping files
+## The page cache
 
-`mmap()` of a file, and `execve()` loading a program, map the file's
-pages into a process. A vnode's pages are kept in its `vm_object`
-([`fs/vm_object.c`](../../kernel/fs/vm_object.c)), made on the first
-mapping: a page is read the first time a process touches it
-(`vnode_page_in()`, called from the page fault handler, see
-[Memory](memory.md)), and stays for the next process that maps the same
-file. Private mappings (`MAP_PRIVATE`, and a program's segments) get a
-copy of a page when they write to it. Shared mappings need the
-filesystem's `map` operation, which only devices have (the framebuffer):
-`MAP_SHARED` on a regular file isn't supported.
+A file's pages in memory are kept in its vnode's `vm_object`
+([`fs/vm_object.c`](../../kernel/fs/vm_object.c)), by their offset in the
+file, made the first time the file is read or mapped. The same pages
+serve every use of the file:
 
-The cached pages are never written back; a `write()` to the file, or a
-truncate, updates the cached copies.
+- **`read()`** of a regular file on a disk filesystem (one with
+  `fs->cached`: ext2, minix) copies from them (`vm_cache_read()`, called
+  by `vfs_read_io()`). A page that isn't there is read in through the
+  filesystem first; when the file is read in order (from its start, or
+  from where the last read-in ended), the pages after it are read with
+  it, 64 KiB at once. A file read a second time comes from memory.
+- **`mmap()`**, and `execve()` loading a program, map them into a process:
+  a page is read in the first time a process touches it
+  (`vnode_page_in()`, the vnode pager's, called from the page fault
+  handler, see [Memory](memory.md)). Private mappings (`MAP_PRIVATE`, and
+  a program's segments) get a copy of a page when they write to it.
+  Shared mappings need the filesystem's `map` operation, which only
+  devices have (the framebuffer): `MAP_SHARED` on a regular file isn't
+  supported.
+
+Other files (tmpfs's, procfs's, the initramfs's) are read through their
+filesystem each time: they are in memory already, or made up when read.
+
+Writes go to the filesystem, as before (below); the pages a write or a
+truncation changed are read again from it (`vnode_pages_update()`), so
+every process that maps them sees the change.
+
+The pages stay as long as there is memory for them. Every cached page is
+on one list, the page used least recently first. When the buddy allocator
+has no page left, `mm_page_alloc()` takes some back
+(`vm_cache_reclaim()`), the oldest first, and tries again: the page cache
+uses the memory nobody else does, and gives it back when it's needed.
+Only the pages of files that nothing maps are taken back: a mapped page
+may be in a process's page tables, and nothing says which (there is no
+reverse map from a page to the mappings of it), so a mapped file keeps
+all its pages until its last mapping goes. `/proc/meminfo`'s `Cached` is
+how much memory the page cache has.
 
 ## Caching and writing to disk
 
-AquilaOS caches in two places:
+Below the page cache, AquilaOS caches in two more places:
 
 - the **vnode caches** of the disk filesystems, above;
 - the **block cache** of the disks, under the filesystems
   ([`dev/blkcache.c`](../../kernel/dev/blkcache.c)): 8 MiB of 4 KiB
   blocks, written back later, kept by least recent use. Every read and
-  write a filesystem makes to its disk goes through it.
+  write a filesystem makes to its disk goes through it: the files' data,
+  on its way to the page cache, and the filesystem's own blocks (inodes,
+  bitmaps, directories), which only it keeps.
 
 A filesystem itself writes through: when a file grows, its inode and
 bitmaps are written to the device at once. Writes reach the disk when the
@@ -330,6 +356,10 @@ number: minix keeps its indirect zone tables in one.)
 - No `umount`, no `fsync()`, no record locks, no shared file mappings.
 - Vnode caches don't shrink: a disk file's vnode stays until it's
   removed.
+- The page cache doesn't write: file data goes to the filesystem at once
+  (and to the disk later, from the block cache), so it is in both caches
+  for a while. Writing pages back from the page cache would be the step
+  to shared writable file mappings.
 - The kernel runs with interrupts off and one CPU in it at a time (see
   [SMP and the kernel lock](smp.md)), so none of these structures has a
   lock of its own; a thread that sleeps (on a disk read, on a pipe) must
@@ -366,7 +396,7 @@ Nearly nothing. The VFS is written against the kernel's interfaces only:
 | `kernel/fs/iobuf.c`                      | kernel | moving bytes to and from user or kernel memory |
 | `kernel/fs/vcache.c`, `bcache.c`         | kernel | the vnode cache, a filesystem's block cache  |
 | `kernel/fs/flock.c`                      | kernel | `flock()`                                    |
-| `kernel/fs/vm_object.c`                  | kernel | a file's pages                               |
+| `kernel/fs/vm_object.c`                  | kernel | the page cache: a file's pages, read-ahead, taking them back |
 | `kernel/fs/sync.c`                       | kernel | (stubs)                                      |
 | `kernel/dev/blkcache.c`                  | kernel | the disks' block cache                       |
 | `kernel/sys/sys_file.c`                  | kernel | the file system calls, `do_openat()`         |
