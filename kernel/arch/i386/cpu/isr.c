@@ -117,6 +117,22 @@ static const int int_sig[32] = {
     /* 0x13 */ SIGFPE,  /* #XM */
 };
 
+/* The si_code of the signal of an exception in user mode (the FPU's are
+ * found from its status, x86_fpu_fault_code()). */
+static const int int_code[32] = {
+    [0x00] = FPE_INTDIV,    /* #DE */
+    [0x01] = TRAP_TRACE,    /* #DB */
+    [0x03] = TRAP_BRKPT,    /* #BP */
+    [0x04] = SI_KERNEL,     /* #OF */
+    [0x05] = SI_KERNEL,     /* #BR */
+    [0x06] = ILL_ILLOPN,    /* #UD */
+    [0x09] = FPE_FLTINV,
+    [0x0B] = BUS_ADRERR,    /* #NP */
+    [0x0C] = BUS_ADRERR,    /* #SS */
+    [0x0D] = SI_KERNEL,     /* #GP */
+    [0x11] = BUS_ADRALN,    /* #AC */
+};
+
 /** Handles a fault in one of the user memory copy routines (`uaccess.S`):
  * the routine resumes at its fixup, which reports the failure to its
  * caller. Returns 1 if the faulting instruction was one of them, 0 if it
@@ -151,16 +167,18 @@ static void isr_dispatch(struct x86_regs *regs)
 
     if (vec == 0xE && curthread) { /* a page fault */
         uintptr_t addr = read_cr2();
+        int err = arch_mm_page_fault(addr, regs->err);
 
-        if (!arch_mm_page_fault(addr, regs->err)) {
+        if (!err) {
             x86_return_to_user(regs, 0);
             return;
         }
 
         /* one from user mode that can't be resolved: SIGSEGV, delivered
-         * on the way back */
+         * on the way back; at an address with no mapping, or with one
+         * that doesn't allow the access */
         if ((regs->cs & 3) == 3) {
-            signal_force(curthread, SIGSEGV);
+            signal_force(curthread, SIGSEGV, err == -EACCES ? SEGV_ACCERR : SEGV_MAPERR, addr);
             x86_return_to_user(regs, 0);
             return;
         }
@@ -203,13 +221,15 @@ static void isr_dispatch(struct x86_regs *regs)
         struct x86_thread *arch = curthread->arch;
         arch->regs = regs;
 
-        /* the faulting instruction */
+        /* the faulting instruction, and what was wrong with it */
 #if ARCH_BITS==32
-        curthread->fault_addr = regs->eip;
+        uintptr_t ip = regs->eip;
 #else
-        curthread->fault_addr = regs->rip;
+        uintptr_t ip = regs->rip;
 #endif
-        signal_force(curthread, int_sig[vec]);
+        int code = vec == 0x10 || vec == 0x13 ? x86_fpu_fault_code(vec) : int_code[vec];
+
+        signal_force(curthread, int_sig[vec], code ? code : SI_KERNEL, ip);
         x86_return_to_user(regs, 0);
         return;
     }

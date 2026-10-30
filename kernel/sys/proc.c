@@ -281,8 +281,18 @@ static void proc_zombie_notify(struct proc *proc)
     int nowait = parent->sigaction[SIGCHLD].sa_handler == SIG_IGN ||
                  (parent->sigaction[SIGCHLD].sa_flags & SA_NOCLDWAIT);
 
+    /* how it ended: an exit code, or the signal that ended it */
+    int sig = proc->exit & 0xff;
+    struct aquila_siginfo info = {
+        .si_signo  = SIGCHLD,
+        .si_code   = sig ? CLD_KILLED : CLD_EXITED,
+        .si_pid    = proc->pid,
+        .si_uid    = proc->uid,
+        .si_status = sig ? sig : (proc->exit >> 8) & 0xff,
+    };
+
     waitq_wakeup(&parent->wait_queue);
-    signal_proc_send(parent, SIGCHLD);
+    signal_post(parent, NULL, &info);
 
     if (nowait)
         proc_reap(proc);

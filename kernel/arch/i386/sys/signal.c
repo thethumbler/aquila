@@ -9,16 +9,17 @@
  * kernel stack. Signals come nowhere else, so the kernel never leaves
  * anything halfway.
  *
- * A handler's frame, on the user stack, is what the handler returns to
- * (the sigcode page) and its arguments (in registers on x86_64), then a
- * `struct sigframe`: the siginfo, the mask to restore, and the
- * interrupted registers and FPU state.
+ * A handler's frame, on the user stack (or its alternate stack, with
+ * `SA_ONSTACK`), is what the handler returns to (the sigcode page) and
+ * its arguments (in registers on x86_64), then a `struct sigframe`: the
+ * siginfo, the ucontext (the mask to restore and the interrupted
+ * registers) and the FPU state.
  *
  * The handler returns into the sigcode page, mapped in every process
  * (`SIGCODE_ADDR`, shared, read and execute), which makes the `sigreturn`
- * system call. It reads the frame back, checks its registers (user
- * segments, no privileged flags), and restores the mask and the FPU
- * state.
+ * system call. It reads the frame back, takes the registers from the
+ * ucontext (with user segments, and no privileged flags), and restores
+ * the mask and the FPU state.
  *
  * The frame is made in the kernel and written with `copyout()`, and read
  * back with `copyin()`: a stack that isn't there is the process's fault
@@ -39,6 +40,7 @@
 #include <sys/uaccess.h>
 
 #include <aquila/syscall.h>
+#include <aquila/ucontext.h>
 
 #if ARCH_BITS==32
 #define REG_IP(r)   ((r)->eip)
@@ -59,11 +61,47 @@
 /** A signal handler's frame, on the user stack. */
 struct sigframe {
     struct aquila_siginfo info;
-    sigset_t mask;              /* the mask that sigreturn restores */
+    struct aquila_ucontext uc;  /* the interrupted context, and the mask
+                                 * that sigreturn restores */
     uint32_t fpu;               /* fxsave below has the thread's FPU state */
-    struct x86_regs regs;       /* the interrupted context */
     uint8_t fxsave[512] __aligned(16);
 } __aligned(16);
+
+/** Copies the registers user code sees, from a saved context to a
+ * ucontext's, and back. */
+static void regs_to_mcontext(const struct x86_regs *r, struct aquila_mcontext *mc)
+{
+#if ARCH_BITS==32
+    *mc = (struct aquila_mcontext) {
+        .eax = r->eax, .ebx = r->ebx, .ecx = r->ecx, .edx = r->edx,
+        .esi = r->esi, .edi = r->edi, .ebp = r->ebp, .esp = r->esp,
+        .eip = r->eip, .eflags = r->eflags,
+    };
+#else
+    *mc = (struct aquila_mcontext) {
+        .rax = r->rax, .rbx = r->rbx, .rcx = r->rcx, .rdx = r->rdx,
+        .rsi = r->rsi, .rdi = r->rdi, .rbp = r->rbp, .rsp = r->rsp,
+        .r8  = r->r8,  .r9  = r->r9,  .r10 = r->r10, .r11 = r->r11,
+        .r12 = r->r12, .r13 = r->r13, .r14 = r->r14, .r15 = r->r15,
+        .rip = r->rip, .rflags = r->rflags,
+    };
+#endif
+}
+
+static void mcontext_to_regs(const struct aquila_mcontext *mc, struct x86_regs *r)
+{
+#if ARCH_BITS==32
+    r->eax = mc->eax; r->ebx = mc->ebx; r->ecx = mc->ecx; r->edx = mc->edx;
+    r->esi = mc->esi; r->edi = mc->edi; r->ebp = mc->ebp; r->esp = mc->esp;
+    r->eip = mc->eip; r->eflags = mc->eflags;
+#else
+    r->rax = mc->rax; r->rbx = mc->rbx; r->rcx = mc->rcx; r->rdx = mc->rdx;
+    r->rsi = mc->rsi; r->rdi = mc->rdi; r->rbp = mc->rbp; r->rsp = mc->rsp;
+    r->r8  = mc->r8;  r->r9  = mc->r9;  r->r10 = mc->r10; r->r11 = mc->r11;
+    r->r12 = mc->r12; r->r13 = mc->r13; r->r14 = mc->r14; r->r15 = mc->r15;
+    r->rip = mc->rip; r->rflags = mc->rflags;
+#endif
+}
 
 /* On i386, below the frame: the return address and the handler's
  * arguments (signal, siginfo, ucontext), padded so that the handler is
@@ -153,8 +191,9 @@ int arch_sigcode_map(struct proc *proc)
 }
 
 /** Makes the handler of `sig` run when the context `r` is returned to:
- * writes its frame on the user stack, and points `r` at the handler. */
-static void deliver(struct x86_regs *r, int sig)
+ * writes its frame on the user stack (or the alternate stack), and points
+ * `r` at the handler. */
+static void deliver(struct x86_regs *r, int sig, const struct aquila_siginfo *info)
 {
     struct thread *thread = curthread;
     struct proc *proc = curproc;
@@ -166,13 +205,13 @@ static void deliver(struct x86_regs *r, int sig)
     sigset_t mask = thread->sig_oldmask_set ? thread->sig_oldmask : thread->sigmask;
     thread->sig_oldmask_set = 0;
 
-#if ARCH_BITS==32
-    uintptr_t sp = REG_SP(r);
-#else
-    /* below the red zone, the 128 bytes the code may use below its stack
-     * pointer */
-    uintptr_t sp = REG_SP(r) - 128;
-#endif
+    /* on the alternate stack, from its top; or below where the thread
+     * was, and on x86_64 below the red zone, the 128 bytes the code may
+     * use below its stack pointer */
+    uintptr_t sp = signal_altstack_top(thread, sa, REG_SP(r));
+
+    if (!sp)
+        sp = REG_SP(r) - (ARCH_BITS == 64 ? 128 : 0);
 
     uintptr_t f = (sp - sizeof(struct sigframe)) & ~(uintptr_t) 15;
 
@@ -186,21 +225,18 @@ static void deliver(struct x86_regs *r, int sig)
      * out */
     struct sigframe frame;
     struct sigframe *uframe = (struct sigframe *) f;
-    int fault = sig == SIGSEGV || sig == SIGBUS || sig == SIGILL || sig == SIGFPE;
 
     memset(&frame, 0, sizeof(frame));
-    frame.info = (struct aquila_siginfo) {
-        .si_signo = sig,
-        .si_addr  = fault ? thread->fault_addr : 0,
-    };
-    frame.mask = mask;
-    frame.regs = *r;
+    frame.info = *info;
+    frame.uc.uc_sigmask = mask;
+    signal_altstack_get(thread, REG_SP(r), &frame.uc.uc_stack);
+    regs_to_mcontext(r, &frame.uc.uc_mcontext);
     frame.fpu  = x86_fpu_save_to(frame.fxsave);
 
     /* below it, what the handler returns to (and its arguments) */
 #if ARCH_BITS==32
     uintptr_t args[I386_ARGS / sizeof(uintptr_t)] = {
-        SIGCODE_ADDR, sig, (uintptr_t) &uframe->info, 0, 0,
+        SIGCODE_ADDR, sig, (uintptr_t) &uframe->info, (uintptr_t) &uframe->uc, 0,
     };
 #else
     uintptr_t args[1] = {SIGCODE_ADDR};
@@ -218,7 +254,7 @@ static void deliver(struct x86_regs *r, int sig)
 #if ARCH_BITS==64
     r->rdi = sig;
     r->rsi = (uintptr_t) &uframe->info;
-    r->rdx = 0;
+    r->rdx = (uintptr_t) &uframe->uc;
 #endif
 
     REG_IP(r) = handler;
@@ -251,7 +287,8 @@ void x86_return_to_user(struct x86_regs *r, int syscall)
         return;
 
     struct proc *proc = thread->owner;
-    int sig = signal_take();
+    struct aquila_siginfo info;
+    int sig = signal_take(&info);
 
     /* a system call that a signal interrupted is made again (if no
      * handler runs, or the handler says SA_RESTART), or fails with EINTR */
@@ -277,7 +314,7 @@ void x86_return_to_user(struct x86_regs *r, int syscall)
     }
 
     if (sig) {
-        deliver(r, sig);
+        deliver(r, sig, &info);
     } else if (thread->sig_oldmask_set) {
         /* sigsuspend() restarted: restore the mask it replaced */
         thread->sigmask = thread->sig_oldmask;
@@ -293,8 +330,8 @@ void x86_return_to_user(struct x86_regs *r, int syscall)
 }
 
 /* Returns from a signal handler (`sigreturn`): restores the interrupted
- * context, the mask and the FPU state from the handler's frame. A bad
- * frame raises `SIGSEGV`. */
+ * context and the mask from the handler's ucontext, and the FPU state
+ * from its frame. A bad frame raises `SIGSEGV`. */
 void arch_sigreturn(void)
 {
     struct x86_thread *arch = curthread->arch;
@@ -309,16 +346,14 @@ void arch_sigreturn(void)
     struct sigframe frame;
 
     if ((f & 15) || copyin(&frame, (void *) f, sizeof(frame))) {
-        signal_force(curthread, SIGSEGV);
+        signal_force(curthread, SIGSEGV, SI_KERNEL, f);
         return;
     }
 
-    /* the frame's registers, but with user mode's segments, and no flags
-     * that user mode couldn't set itself */
-    uintptr_t flags = (REG_FLAGS(&frame.regs) & USER_FLAGS) | X86_EFLAGS;
-
-    *r = frame.regs;
-    REG_FLAGS(r) = flags;
+    /* the ucontext's registers, but with user mode's segments, and no
+     * flags that user mode couldn't set itself */
+    mcontext_to_regs(&frame.uc.uc_mcontext, r);
+    REG_FLAGS(r) = (REG_FLAGS(r) & USER_FLAGS) | X86_EFLAGS;
     r->cs = X86_CS;
     r->ss = X86_SS;
 
@@ -326,6 +361,16 @@ void arch_sigreturn(void)
     r->ds = r->es = r->fs = r->gs = X86_SS;
 #endif
 
-    curthread->sigmask = frame.mask & ~SIG_UNMASKABLE;
+    curthread->sigmask = frame.uc.uc_sigmask & ~SIG_UNMASKABLE;
     x86_fpu_load_from(frame.fxsave, frame.fpu);
+}
+
+/*
+ * Returns the user stack pointer of the current thread, from the context
+ * it entered the kernel with.
+ */
+uintptr_t arch_user_sp(void)
+{
+    struct x86_thread *arch = curthread->arch;
+    return REG_SP(arch->regs);
 }

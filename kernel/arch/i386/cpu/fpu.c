@@ -171,6 +171,46 @@ void x86_fpu_trap(void)
 }
 
 /**
+ * Says which floating-point exception made the current thread fault, for
+ * its `SIGFPE`'s `si_code`: from the status of the x87 FPU (`#MF`) or of
+ * SSE (`#XM`), the exceptions that are flagged and not masked. The FPU
+ * holds the thread's state: it just ran one of its instructions.
+ *
+ * @param vec  the exception: 0x10 (`#MF`) or 0x13 (`#XM`)
+ * @return `FPE_FLTINV`, `FPE_FLTDIV`, `FPE_FLTOVF`, `FPE_FLTUND` or
+ *         `FPE_FLTRES`, or `SI_KERNEL` if none is flagged
+ */
+int x86_fpu_fault_code(unsigned vec)
+{
+    unsigned status;
+
+    if (curthread != last_fpu_thread)
+        return SI_KERNEL;
+
+    if (vec == 0x13) {
+        /* MXCSR: the flags in bits 0-5, their masks in bits 7-12 */
+        uint32_t mxcsr;
+        asm volatile("stmxcsr %0" : "=m"(mxcsr));
+        status = mxcsr & ~(mxcsr >> 7);
+    } else {
+        /* the status word's flags, the control word's masks, both in
+         * bits 0-5 */
+        uint16_t sw, cw;
+        asm volatile("fnstsw %0; fnstcw %1" : "=m"(sw), "=m"(cw));
+        status = sw & ~cw;
+    }
+
+    /* invalid, denormal, zero divide, overflow, underflow, precision */
+    if (status & 0x01) return FPE_FLTINV;
+    if (status & 0x04) return FPE_FLTDIV;
+    if (status & 0x08) return FPE_FLTOVF;
+    if (status & 0x12) return FPE_FLTUND;
+    if (status & 0x20) return FPE_FLTRES;
+
+    return SI_KERNEL;
+}
+
+/**
  * Saves the current thread's FPU state when it is switched out, if the FPU
  * holds it, because the thread may run on another CPU next. Afterwards,
  * the FPU belongs to no thread.

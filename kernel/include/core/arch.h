@@ -144,9 +144,18 @@ void arch_exec_start(struct thread *thread, uintptr_t entry, uintptr_t sp);
 /* arch/ARCH/sys/signal.c */
 
 /** Returns from a signal handler, for `sigreturn()`: restores the
- * registers, the signal mask and the FPU state that the handler's frame
- * saved. A bad frame gets `SIGSEGV`. */
+ * registers and the signal mask from the handler's ucontext, and the FPU
+ * state from its frame. A bad frame gets `SIGSEGV`. */
 void arch_sigreturn(void);
+
+/**
+ * Returns the user stack pointer of the current thread, as it was when it
+ * entered the kernel (for `sigaltstack()`: whether it runs on its
+ * alternate stack).
+ *
+ * @return the stack pointer
+ */
+uintptr_t arch_user_sp(void);
 
 /**
  * Maps the page with the code that calls `sigreturn()` (the sigcode)

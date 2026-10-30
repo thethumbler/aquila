@@ -29,7 +29,8 @@ long sys_kill(pid_t pid, int sig)
 /**
  * Implements `pthread_kill()`: sends a signal to a thread of the calling
  * process. The thread takes it, unless it blocks it; its action is the
- * process's, so a signal that terminates ends the whole process.
+ * process's, so a signal that terminates ends the whole process. Its
+ * siginfo says the caller sent it (`SI_USER`).
  *
  * @param tid  the thread's ID
  * @param sig  the signal, or 0 to only check that the thread exists
@@ -48,7 +49,14 @@ long sys_thread_kill(int tid, int sig)
     if (!thread || thread->state == ZOMBIE)
         return -ESRCH;
 
-    return signal_thread_send(thread, sig);
+    struct aquila_siginfo info = {
+        .si_signo = sig,
+        .si_code  = SI_USER,
+        .si_pid   = curproc->pid,
+        .si_uid   = curproc->uid,
+    };
+
+    return signal_post(curproc, thread, &info);
 }
 
 /**
@@ -258,10 +266,11 @@ long sys_sigtimedwait(const sigset_t *set, struct aquila_siginfo *info,
     }
 
     struct waitq wait = {0};
+    struct aquila_siginfo kinfo;
     int sig;
 
     for (;;) {
-        if ((sig = signal_dequeue(thread, kset)))
+        if ((sig = signal_dequeue(thread, kset, &kinfo)))
             break;
 
         if (timeout && arch_rtime_ns() >= until) {
@@ -275,7 +284,7 @@ long sys_sigtimedwait(const sigset_t *set, struct aquila_siginfo *info,
 
         /* another signal, one it doesn't wait for: EINTR once its handler
          * ran, a restart after a stop */
-        if (r < 0 && !(sig = signal_dequeue(thread, kset))) {
+        if (r < 0 && !(sig = signal_dequeue(thread, kset, &kinfo))) {
             return -ERESTARTNOHAND;
         }
 
@@ -283,15 +292,65 @@ long sys_sigtimedwait(const sigset_t *set, struct aquila_siginfo *info,
             break;
     }
 
-    if (info) {
-        struct aquila_siginfo kinfo = {.si_signo = sig};
-
-        if (copyout(info, &kinfo, sizeof(kinfo))) {
-            return -EFAULT;
-        }
+    if (info && copyout(info, &kinfo, sizeof(kinfo))) {
+        return -EFAULT;
     }
 
     return sig;
+}
+
+/**
+ * Implements `sigaltstack()`: reads and sets the calling thread's
+ * alternate signal stack, where the handlers with `SA_ONSTACK` run. It
+ * can't be changed while the thread runs on it.
+ *
+ * @param ss   the new stack, or NULL to leave it: `SS_DISABLE` for none
+ * @param oss  where to put the old one, or NULL
+ * @return 0, or a negative errno: `-EPERM` (running on it), `-EINVAL` (bad
+ *         flags), `-ENOMEM` (smaller than `MINSIGSTKSZ`), `-EFAULT`
+ */
+long sys_sigaltstack(const struct aquila_stack *ss, struct aquila_stack *oss)
+{
+    syscall_log(LOG_DEBUG, "sigaltstack(ss=%p, oss=%p)\n", ss, oss);
+
+    struct thread *thread = curthread;
+    struct aquila_stack new, old;
+
+    if (ss && copyin(&new, ss, sizeof(new))) {
+        return -EFAULT;
+    }
+
+    signal_altstack_get(thread, arch_user_sp(), &old);
+
+    if (ss) {
+        if (old.ss_flags & SS_ONSTACK) {
+            return -EPERM;
+        }
+
+        if (new.ss_flags & ~SS_DISABLE) {
+            return -EINVAL;
+        }
+
+        if (!(new.ss_flags & SS_DISABLE) && new.ss_size < MINSIGSTKSZ) {
+            return -ENOMEM;
+        }
+    }
+
+    if (oss && copyout(oss, &old, sizeof(old))) {
+        return -EFAULT;
+    }
+
+    if (ss) {
+        /* none: a size of 0; a stack past user space would only make
+         * the frame's copyout() fail, as one that isn't mapped */
+        if (new.ss_flags & SS_DISABLE)
+            new.ss_sp = new.ss_size = 0;
+
+        new.ss_flags = 0;
+        thread->sig_altstack = new;
+    }
+
+    return 0;
 }
 
 /**

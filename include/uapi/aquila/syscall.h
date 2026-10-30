@@ -116,8 +116,9 @@
 #define SYS_thread_detach   97
 #define SYS_sigtimedwait    98
 #define SYS_sigpending      99
+#define SYS_sigaltstack     100
 
-#define SYS_MAX             99
+#define SYS_MAX             100
 
 /*
  * Arguments of the older system calls that take more than three, passed

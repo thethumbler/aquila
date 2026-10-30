@@ -390,7 +390,9 @@ static inline int pf_zero(struct pf *pf)
  * @param flags  the kind of access (`PF_READ`, `PF_WRITE`, `PF_EXEC`, and
  *               `PF_PRESENT` if a page was mapped there)
  * @return 0 if the fault is resolved (the page is mapped now), or
- *         `-EFAULT` if it isn't
+ *         `-EACCES` if the mapping doesn't allow the access, or `-EFAULT`
+ *         if it can't be resolved otherwise (no mapping there): a
+ *         `SIGSEGV`'s `SEGV_ACCERR` and `SEGV_MAPERR`
  */
 int mm_page_fault(vaddr_t vaddr, int flags)
 {
@@ -404,8 +406,11 @@ int mm_page_fault(vaddr_t vaddr, int flags)
     vm_entry = vm_space_find(vm_space, addr);
 
     /* no mapping, or one that doesn't allow the access: SIGSEGV */
-    if (!vm_entry || check_violation(flags, vm_entry->flags))
+    if (!vm_entry)
         goto sigsegv;
+
+    if (check_violation(flags, vm_entry->flags))
+        return -EACCES;
 
     /* the page's offset in the mapping's object (and anon) */
     size_t off = addr - vm_entry->base + vm_entry->off;
@@ -458,6 +463,5 @@ done:
         signal_proc_send(curproc, SIGKILL);
 
 sigsegv:
-    curthread->fault_addr = vaddr;
     return -EFAULT;
 }

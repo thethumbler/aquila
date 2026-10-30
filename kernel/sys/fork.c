@@ -114,10 +114,11 @@ int proc_fork(struct thread *thread, struct proc **ref)
     fork->parent = proc;
 
     /* the child's thread starts as if it had been switched away from:
-     * from where fork() returns; with the signal mask of the thread that
-     * forked, and nothing pending */
+     * from where fork() returns; with the signal mask and the alternate
+     * stack of the thread that forked, and nothing pending */
     fork_thread->spawned = 1;
     fork_thread->sigmask = thread->sigmask;
+    fork_thread->sig_altstack = thread->sig_altstack;
 
     /* the same current directory */
     if ((fork->cwd = proc->cwd))

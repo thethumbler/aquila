@@ -172,6 +172,7 @@ SYSCALL2(thread_kill, int, int)
 SYSCALL1(thread_detach, int)
 SYSCALL3(sigtimedwait, const sigset_t *, struct aquila_siginfo *, const struct aquila_timespec *)
 SYSCALL1(sigpending, sigset_t *)
+SYSCALL2(sigaltstack, const struct aquila_stack *, struct aquila_stack *)
 SYSCALL0(getppid)
 SYSCALL1(select, struct aquila_select_args *)
 SYSCALL3(poll, struct pollfd *, nfds_t, int)
@@ -296,6 +297,7 @@ const syscall_t syscall_table[] = {
     [SYS_thread_detach] = sys_thread_detach_entry,
     [SYS_sigtimedwait]  = sys_sigtimedwait_entry,
     [SYS_sigpending]    = sys_sigpending_entry,
+    [SYS_sigaltstack]   = sys_sigaltstack_entry,
 };
 
 const size_t syscall_cnt = sizeof(syscall_table)/sizeof(syscall_table[0]);

@@ -74,9 +74,11 @@ int signal_stops(struct proc *proc, int sig)
            sig_default_action[sig] == SIGACT_STOP;
 }
 
-/** Tells a process's parent that it stopped or continued: its `wait()`
- * wakes up, and it gets `SIGCHLD` unless it asked not to (`SA_NOCLDSTOP`). */
-static void signal_notify_parent(struct proc *proc)
+/** Tells a process's parent that it stopped or continued (`code` is
+ * `CLD_STOPPED` or `CLD_CONTINUED`, `sig` the signal that did it): its
+ * `wait()` wakes up, and it gets `SIGCHLD` unless it asked not to
+ * (`SA_NOCLDSTOP`). */
+static void signal_notify_parent(struct proc *proc, int code, int sig)
 {
     struct proc *parent = proc->parent;
 
@@ -85,8 +87,17 @@ static void signal_notify_parent(struct proc *proc)
 
     waitq_wakeup(&parent->wait_queue);
 
-    if (!(parent->sigaction[SIGCHLD].sa_flags & SA_NOCLDSTOP))
-        signal_proc_send(parent, SIGCHLD);
+    if (!(parent->sigaction[SIGCHLD].sa_flags & SA_NOCLDSTOP)) {
+        struct aquila_siginfo info = {
+            .si_signo  = SIGCHLD,
+            .si_code   = code,
+            .si_pid    = proc->pid,
+            .si_uid    = proc->uid,
+            .si_status = sig,
+        };
+
+        signal_post(parent, NULL, &info);
+    }
 }
 
 /**
@@ -103,7 +114,7 @@ void signal_stop(int sig)
 
     proc->stopped = sig;
     proc->wait_event = (proc->wait_event & ~WAIT_CONTINUED) | WAIT_STOPPED;
-    signal_notify_parent(proc);
+    signal_notify_parent(proc, CLD_STOPPED, sig);
 
     /* the whole process stops: its other threads stop on their way back
      * to user mode (signal_take()); those running on other CPUs go there
@@ -172,14 +183,17 @@ static int signal_takes(struct thread *thread, int sig)
 
 /**
  * Sends a signal to a process, or to one of its threads: makes it pending,
+ * with its siginfo (unless it is already: the first sending's is kept),
  * and wakes up a thread that would take it on its way back to user mode.
  * A process's signal goes to a thread waiting for it in `sigtimedwait()`
  * first, else to the first one that doesn't block it; if they all do, it
  * stays pending until one unblocks it. Returns 0, `-EINVAL` for a bad
  * signal, or `-EPERM` for process 0.
  */
-static int signal_to(struct proc *proc, struct thread *target, int signal)
+static int signal_to(struct proc *proc, struct thread *target, const struct aquila_siginfo *info)
 {
+    int signal = info->si_signo;
+
     if (signal < 0 || signal > SIG_MAX)
         return -EINVAL;
 
@@ -204,7 +218,7 @@ static int signal_to(struct proc *proc, struct thread *target, int signal)
 
             if (signal == SIGCONT) {
                 proc->wait_event = (proc->wait_event & ~WAIT_STOPPED) | WAIT_CONTINUED;
-                signal_notify_parent(proc);
+                signal_notify_parent(proc, CLD_CONTINUED, SIGCONT);
             }
 
             waitq_wakeup(&proc->stop_queue);
@@ -221,6 +235,9 @@ static int signal_to(struct proc *proc, struct thread *target, int signal)
         if (target->state == ZOMBIE || target->killed)
             return 0;
 
+        if (!(target->sig_pending & (1UL << signal)))
+            target->sig_info[signal] = *info;
+
         target->sig_pending |= 1UL << signal;
 
         if (signal_takes(target, signal))
@@ -228,6 +245,9 @@ static int signal_to(struct proc *proc, struct thread *target, int signal)
 
         return 0;
     }
+
+    if (!(proc->sig_pending & (1UL << signal)))
+        proc->sig_info[signal] = *info;
 
     proc->sig_pending |= 1UL << signal;
 
@@ -292,14 +312,19 @@ int signal_interrupts(struct thread *thread)
     return !!(pending & (~thread->sigmask | thread->sig_waiting));
 }
 
-/** Takes signal `sig` off what is pending for a thread: its own, else its
- * process's. */
-static void signal_unpend(struct thread *thread, int sig)
+/** Takes signal `sig` off what is pending for a thread, its own else its
+ * process's, and puts its siginfo in `info`. */
+static void signal_unpend(struct thread *thread, int sig, struct aquila_siginfo *info)
 {
-    if (thread->sig_pending & (1UL << sig))
+    struct proc *proc = thread->owner;
+
+    if (thread->sig_pending & (1UL << sig)) {
         thread->sig_pending &= ~(1UL << sig);
-    else
-        thread->owner->sig_pending &= ~(1UL << sig);
+        *info = thread->sig_info[sig];
+    } else {
+        proc->sig_pending &= ~(1UL << sig);
+        *info = proc->sig_info[sig];
+    }
 }
 
 /**
@@ -308,10 +333,11 @@ static void signal_unpend(struct thread *thread, int sig)
  *
  * @param thread  the thread
  * @param set     the signals it waits for
+ * @param info    where to put the signal's siginfo
  * @return the lowest numbered one pending, the thread's own before its
  *         process's, or 0 if none is
  */
-int signal_dequeue(struct thread *thread, sigset_t set)
+int signal_dequeue(struct thread *thread, sigset_t set, struct aquila_siginfo *info)
 {
     sigset_t ready = thread->sig_pending & set;
 
@@ -322,28 +348,37 @@ int signal_dequeue(struct thread *thread, sigset_t set)
         return 0;
 
     int sig = __builtin_ctzl(ready);
-    signal_unpend(thread, sig);
+    signal_unpend(thread, sig, info);
     return sig;
 }
 
 /**
  * Sends a thread a signal that can't be blocked or ignored, such as the
  * `SIGSEGV` of its fault: if the thread blocks it or the process ignores
- * it, it is unblocked and its action reset to the default.
+ * it, it is unblocked and its action reset to the default. Its siginfo is
+ * this fault's, even if the signal was pending already.
  *
  * @param thread  the thread
  * @param signal  the signal
+ * @param code    its `si_code` (`SEGV_MAPERR`...), or `SI_KERNEL`
+ * @param addr    its `si_addr`: the address, or the instruction
  */
-void signal_force(struct thread *thread, int signal)
+void signal_force(struct thread *thread, int signal, int code, uintptr_t addr)
 {
     struct proc *proc = thread->owner;
+    struct aquila_siginfo info = {
+        .si_signo = signal,
+        .si_code  = code,
+        .si_addr  = addr,
+    };
 
     if ((thread->sigmask & (1UL << signal)) || proc->sigaction[signal].sa_handler == SIG_IGN) {
         thread->sigmask &= ~(1UL << signal);
         proc->sigaction[signal].sa_handler = SIG_DFL;
     }
 
-    signal_to(proc, thread, signal);
+    thread->sig_pending &= ~(1UL << signal);
+    signal_to(proc, thread, &info);
 }
 
 /**
@@ -367,10 +402,11 @@ void signal_exit(int sig)
  * with a handler is found. A thread of a stopped process stops here
  * until it is continued.
  *
+ * @param info  where to put the siginfo of the signal returned
  * @return a signal whose handler the architecture runs now, or 0 if there
  *         is none
  */
-int signal_take(void)
+int signal_take(struct aquila_siginfo *info)
 {
     struct thread *thread = curthread;
     struct proc *proc = curproc;
@@ -387,7 +423,7 @@ int signal_take(void)
 
         /* SIGKILL first, then the lowest numbered signal */
         int sig = (ready & (1UL << SIGKILL)) ? SIGKILL : __builtin_ctzl(ready);
-        signal_unpend(thread, sig);
+        signal_unpend(thread, sig, info);
 
         uintptr_t handler = proc->sigaction[sig].sa_handler;
 
@@ -416,8 +452,75 @@ int signal_take(void)
     }
 }
 
+/** Returns whether the stack pointer `sp` is on the thread's alternate
+ * stack. */
+static int signal_on_altstack(struct thread *thread, uintptr_t sp)
+{
+    struct aquila_stack *ss = &thread->sig_altstack;
+
+    return ss->ss_size && sp > ss->ss_sp && sp - ss->ss_sp <= ss->ss_size;
+}
+
 /**
- * Sends a signal to a process.
+ * Says where a handler's frame goes: on the thread's alternate stack if
+ * the action has `SA_ONSTACK` and the thread has one, and isn't on it
+ * already (a handler interrupted there goes on below where it was).
+ *
+ * @param thread  the thread
+ * @param sa      the signal's action
+ * @param sp      the user stack pointer the signal interrupted
+ * @return the top of the alternate stack, or 0 if the frame goes on the
+ *         stack the thread is on
+ */
+uintptr_t signal_altstack_top(struct thread *thread, struct aquila_sigaction *sa, uintptr_t sp)
+{
+    struct aquila_stack *ss = &thread->sig_altstack;
+
+    if (!(sa->sa_flags & SA_ONSTACK) || !ss->ss_size || signal_on_altstack(thread, sp))
+        return 0;
+
+    return ss->ss_sp + ss->ss_size;
+}
+
+/**
+ * Describes a thread's alternate stack, as `sigaltstack()` reports it:
+ * where it is, and whether the thread runs on it (`SS_ONSTACK`), or that
+ * there is none (`SS_DISABLE`).
+ *
+ * @param thread  the thread
+ * @param sp      its user stack pointer
+ * @param ss      where to put it
+ */
+void signal_altstack_get(struct thread *thread, uintptr_t sp, struct aquila_stack *ss)
+{
+    *ss = thread->sig_altstack;
+
+    if (!ss->ss_size)
+        ss->ss_flags = SS_DISABLE;
+    else
+        ss->ss_flags = signal_on_altstack(thread, sp) ? SS_ONSTACK : 0;
+}
+
+/**
+ * Sends a signal with its siginfo, to a process or to one of its threads.
+ *
+ * @param proc    the process
+ * @param thread  the thread, or NULL for any thread of the process
+ * @param info    the signal (`si_signo`, 0 only checks that the process
+ *                exists) and its siginfo
+ * @return 0, `-EINVAL` for a bad signal, or `-EPERM` for process 0
+ */
+int signal_post(struct proc *proc, struct thread *thread, const struct aquila_siginfo *info)
+{
+    return signal_to(proc, thread, info);
+}
+
+/** Makes the siginfo of a signal the kernel sends (`SI_KERNEL`). */
+#define KERNEL_INFO(sig)    ((struct aquila_siginfo) {.si_signo = (sig), .si_code = SI_KERNEL})
+
+/**
+ * Sends a signal of the kernel's (a terminal's, a timer's...) to a
+ * process.
  *
  * @param proc    the process
  * @param signal  the signal (0 only checks that the process exists)
@@ -425,7 +528,8 @@ int signal_take(void)
  */
 int signal_proc_send(struct proc *proc, int signal)
 {
-    return signal_to(proc, NULL, signal);
+    struct aquila_siginfo info = KERNEL_INFO(signal);
+    return signal_to(proc, NULL, &info);
 }
 
 /**
@@ -439,7 +543,8 @@ int signal_proc_send(struct proc *proc, int signal)
  */
 int signal_thread_send(struct thread *thread, int signal)
 {
-    return signal_to(thread->owner, thread, signal);
+    struct aquila_siginfo info = KERNEL_INFO(signal);
+    return signal_to(thread->owner, thread, &info);
 }
 
 /**
@@ -451,14 +556,17 @@ int signal_thread_send(struct thread *thread, int signal)
  */
 int signal_pgrp_send(struct pgroup *pg, int signal)
 {
+    struct aquila_siginfo info = KERNEL_INFO(signal);
+
     queue_for (node, pg->procs)
-        signal_to(node->value, NULL, signal);
+        signal_to(node->value, NULL, &info);
 
     return 0;
 }
 
 /**
- * Sends a signal as `kill()` does.
+ * Sends a signal as `kill()` does: its siginfo says the calling process
+ * sent it (`SI_USER`, its pid and user id).
  *
  * @param pid     whom to: a process if `pid` > 0, the caller's process
  *                group if 0, every process but init and the caller if -1,
@@ -472,13 +580,21 @@ int signal_send(pid_t pid, int signal)
     if (signal < 0 || signal > SIG_MAX)
         return -EINVAL;
 
+    /* who sent it */
+    struct aquila_siginfo info = {
+        .si_signo = signal,
+        .si_code  = SI_USER,
+        .si_pid   = curproc->pid,
+        .si_uid   = curproc->uid,
+    };
+
     if (pid > 0) {
         struct proc *proc = proc_pid_find(pid);
 
         if (!proc)
             return -ESRCH;
 
-        return signal_to(proc, NULL, signal);
+        return signal_to(proc, NULL, &info);
     }
 
     if (pid == -1) {
@@ -490,7 +606,7 @@ int signal_send(pid_t pid, int signal)
             if (proc->pid == 1 || proc == curproc || proc == kproc)
                 continue;
 
-            signal_to(proc, NULL, signal);
+            signal_to(proc, NULL, &info);
             found = 1;
         }
 
@@ -507,7 +623,7 @@ int signal_send(pid_t pid, int signal)
             continue;
 
         found = 1;
-        signal_to(proc, NULL, signal);
+        signal_to(proc, NULL, &info);
     }
 
     return found ? 0 : -ESRCH;

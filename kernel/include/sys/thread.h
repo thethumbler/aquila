@@ -9,6 +9,8 @@ struct thread;
 #include <sys/waitq.h>
 #include <ds/list.h>
 
+#include <aquila/signal.h>
+
 /* Threads (sys/thread.c). See docs/kernel/processes.md. */
 
 /* A thread's state. */
@@ -70,8 +72,13 @@ struct thread {
     sigset_t sigmask;
 
     /** the signals pending on it alone (a fault's, pthread_kill()'s),
-     *  which it takes before its process's */
+     *  which it takes before its process's, and their siginfo */
     sigset_t sig_pending;
+    struct aquila_siginfo sig_info[NSIG];
+
+    /** its alternate signal stack (sigaltstack()), for the handlers with
+     *  SA_ONSTACK; none if its size is 0 */
+    struct aquila_stack sig_altstack;
 
     /** in sigtimedwait(): the signals it waits for, blocked or not; one
      *  sent to the process goes to it first */
@@ -86,10 +93,6 @@ struct thread {
     /** when it waits with a deadline (sched_wait()): the deadline, in
      *  arch_rtime_ns() time */
     uint64_t sleep_until;
-
-    /** the address of its last fault, the si_addr of the signal it
-     *  raised */
-    uintptr_t fault_addr;
 
     /** it's on the timer's list while it waits with a deadline */
     struct list_node timer_link;

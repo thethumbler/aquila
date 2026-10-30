@@ -31,13 +31,17 @@ struct aquila_sigaction;
 extern int sig_default_action[SIG_MAX+1];
 
 /*
- * Sending a signal makes it pending (a bit for each signal), on the
- * process or on one thread, and wakes up a thread that doesn't block it.
- * Signals are delivered only on the way back to user mode (signal_take(),
- * from the architecture's return path), never from the middle of the
- * kernel: a sleep that a signal interrupts returns ERESTARTSYS, and the
- * system call unwinds.
+ * Sending a signal makes it pending (a bit for each signal, and its
+ * siginfo), on the process or on one thread, and wakes up a thread that
+ * doesn't block it. Signals are delivered only on the way back to user
+ * mode (signal_take(), from the architecture's return path), never from
+ * the middle of the kernel: a sleep that a signal interrupts returns
+ * ERESTARTSYS, and the system call unwinds.
+ *
+ * signal_post() sends one with its siginfo; the others make it: kill()'s
+ * (signal_send(): SI_USER, from the caller) or the kernel's (SI_KERNEL).
  */
+int signal_post(struct proc *proc, struct thread *thread, const struct aquila_siginfo *info);
 int signal_send(int pid, int sig);
 int signal_proc_send(struct proc *proc, int signal);
 int signal_thread_send(struct thread *thread, int signal);
@@ -47,10 +51,11 @@ int signal_pgrp_send(struct pgroup *pg, int signal);
  * is now ignored is discarded). */
 void signal_action_set(struct proc *proc, int sig);
 
-/* Sends a fault's signal (SIGSEGV, SIGILL...): it is delivered even if
- * it's blocked or ignored, by its default action then, because the
- * instruction would only fault again. */
-void signal_force(struct thread *thread, int signal);
+/* Sends a thread its fault's signal (SIGSEGV, SIGILL...), with the
+ * fault's si_code and address: it is delivered even if it's blocked or
+ * ignored, by its default action then, because the instruction would only
+ * fault again. */
+void signal_force(struct thread *thread, int signal, int code, uintptr_t addr);
 
 /* Says whether a signal is pending that the thread doesn't block (or
  * waits for, in sigtimedwait()), which ends its interruptible sleeps. */
@@ -58,13 +63,22 @@ int signal_interrupts(struct thread *thread);
 
 /* Takes a pending signal of `set` for the thread, blocked or not (for
  * sigtimedwait()): the lowest numbered, its own before its process's.
- * Returns it, or 0 if none is pending. */
-int signal_dequeue(struct thread *thread, sigset_t set);
+ * Returns it, or 0 if none is pending; `info` gets its siginfo. */
+int signal_dequeue(struct thread *thread, sigset_t set, struct aquila_siginfo *info);
 
 /* On the way back to user mode: stops the process, or does the default
  * actions, of the pending signals (terminating doesn't return), and
- * returns the signal whose handler is to run, or 0. */
-int signal_take(void);
+ * returns the signal whose handler is to run, or 0; `info` gets its
+ * siginfo. */
+int signal_take(struct aquila_siginfo *info);
+
+/* Where a handler's frame goes for the action `sa`, the user stack
+ * pointer being `sp`: the top of the thread's alternate stack if the
+ * handler runs there, or 0 to stay on the stack it's on. And the
+ * alternate stack as sigaltstack() would report it (the ucontext's
+ * uc_stack). */
+uintptr_t signal_altstack_top(struct thread *thread, struct aquila_sigaction *sa, uintptr_t sp);
+void signal_altstack_get(struct thread *thread, uintptr_t sp, struct aquila_stack *ss);
 
 /* Ends the current process, by `sig`, from where it can't go on. */
 void signal_exit(int sig) __attribute__((noreturn));

@@ -38,6 +38,7 @@
 #define ISS_WNR         (1 << 6)
 #define ISS_FSC(esr)    ((esr) & 0x3F)
 #define FSC_PERMISSION  0x0C    /* 0b0011xx: a permission fault, so a page is mapped there */
+#define FSC_ALIGNMENT   0x21    /* a misaligned access */
 
 /** Prints the saved registers, for a panic. */
 static void dump(struct aarch64_regs *r)
@@ -84,13 +85,23 @@ static void abort(struct aarch64_regs *r, int ec)
 
     /* the process's memory, which may not be mapped yet (a user address
      * only: the kernel's own memory is all mapped) */
-    if (far < USER_STACK && curthread && !mm_page_fault(far, flags)) {
+    int err = -EFAULT;
+
+    if (far < USER_STACK && curthread && !(err = mm_page_fault(far, flags))) {
+        aarch64_return_to_user(r, 0);
+        return;
+    }
+
+    /* user mode's: SIGBUS for a misaligned access, else SIGSEGV, at an
+     * address with no mapping, or with one that doesn't allow the access */
+    if (user && ISS_FSC(r->esr) == FSC_ALIGNMENT) {
+        signal_force(curthread, SIGBUS, BUS_ADRALN, far);
         aarch64_return_to_user(r, 0);
         return;
     }
 
     if (user) {
-        signal_force(curthread, SIGSEGV);
+        signal_force(curthread, SIGSEGV, err == -EACCES ? SEGV_ACCERR : SEGV_MAPERR, far);
         aarch64_return_to_user(r, 0);
         return;
     }
@@ -133,7 +144,7 @@ static void sync_dispatch(struct aarch64_regs *r)
              * on) */
             if (REGS_USER(r)) {
                 if (aarch64_fpsimd_trap())
-                    signal_force(curthread, SIGKILL);
+                    signal_force(curthread, SIGKILL, SI_KERNEL, 0);
 
                 aarch64_return_to_user(r, 0);
                 return;
@@ -146,9 +157,9 @@ static void sync_dispatch(struct aarch64_regs *r)
          * misaligned PC or stack, a breakpoint */
         int sig = ec == EC_PC_ALIGN || ec == EC_SP_ALIGN ? SIGBUS :
                   ec == EC_BRK ? SIGTRAP : SIGILL;
+        int code = sig == SIGBUS ? BUS_ADRALN : sig == SIGTRAP ? TRAP_BRKPT : ILL_ILLOPC;
 
-        curthread->fault_addr = r->pc;
-        signal_force(curthread, sig);
+        signal_force(curthread, sig, code, r->pc);
         aarch64_return_to_user(r, 0);
         return;
     }

@@ -424,7 +424,8 @@ int proc_execve(struct thread *thread, const char *fn, char * const _argp[], cha
             proc_fd_close(proc, fd);
 
     /* caught signals go back to their default action, and ignored ones
-     * stay ignored (POSIX); the signal mask and the pending signals stay */
+     * stay ignored (POSIX); the signal mask and the pending signals stay,
+     * the alternate stack, in the old program's memory, goes */
     for (int i = 0; i <= SIG_MAX; ++i) {
         if (proc->sigaction[i].sa_handler != SIG_IGN)
             proc->sigaction[i].sa_handler = SIG_DFL;
@@ -432,6 +433,8 @@ int proc_execve(struct thread *thread, const char *fn, char * const _argp[], cha
         proc->sigaction[i].sa_mask = 0;
         proc->sigaction[i].sa_flags = 0;
     }
+
+    curthread->sig_altstack = (struct aquila_stack) {0};
 
     exec_start(proc, argc, argp, envc, envp);
 

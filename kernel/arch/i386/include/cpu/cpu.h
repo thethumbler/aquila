@@ -286,6 +286,7 @@ void x86_fpu_switch_out(void);
 int  x86_fpu_save_to(void *buf);
 void x86_fpu_reset(void);
 void x86_fpu_load_from(const void *buf, int valid);
+int  x86_fpu_fault_code(unsigned vec);
 
 /* sys/signal.c: delivers the pending signals on the way back to user
  * mode from the context `r` */

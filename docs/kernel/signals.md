@@ -30,19 +30,21 @@ A process has, for each signal ([`include/sys/proc.h`](../../kernel/include/sys/
 - its **action**, `sigaction[sig]`: `SIG_DFL`, `SIG_IGN`, or a handler,
   with the flags and the mask of the `sigaction()` call that set it;
 - a bit in its **pending** set, `sig_pending`: sent to the process, not
-  yet taken by any of its threads.
+  yet taken by any of its threads; and the signal's **siginfo**,
+  `sig_info[sig]`, why it was sent (below).
 
 And each of its threads has ([`include/sys/thread.h`](../../kernel/include/sys/thread.h)):
 
-- a bit in its own **pending** set, `sig_pending`: sent to that thread
-  alone (a fault's signal, `pthread_kill()`, the `SIGPIPE` of its write);
+- a bit in its own **pending** set, `sig_pending`, and its siginfo:
+  sent to that thread alone (a fault's signal, `pthread_kill()`, the
+  `SIGPIPE` of its write);
 - a bit in its **mask**, `sigmask`: blocked, the signal stays pending
   until the thread unblocks it, or another thread that doesn't block it
   takes it.
 
 The sets are bit masks, signal *n* being bit `1 << n`. A signal sent
 again while pending is delivered once: signals aren't counted, as
-everywhere.
+everywhere, and the siginfo kept is the first sending's.
 
 The default actions ([`sys/signal.c`](../../kernel/sys/signal.c),
 `sig_default_action[]`):
@@ -91,8 +93,9 @@ Every way of sending a signal ends in `signal_to()`:
 2. discards the signal if delivering it would do nothing: its action is
    `SIG_IGN`, or it's `SIG_DFL` and the default is to ignore, or to
    continue (`SIGCONT`'s, done already);
-3. otherwise sets its bit in the pending set: the thread's, for a
-   signal sent to one thread, or the process's;
+3. otherwise sets its bit in the pending set, the thread's for a signal
+   sent to one thread or the process's, and keeps its siginfo if it
+   wasn't pending already;
 4. picks the thread to take it, and makes it come back to user mode
    soon: woken if it sleeps in an *interruptible* sleep (`ISLEEP`), made
    to enter the kernel now if it runs on another CPU
@@ -106,7 +109,9 @@ Process 0, the kernel's, takes no signals; a zombie takes none either.
 
 `signal_force()` is for faults: the instruction that faulted would fault
 again if the signal were blocked or ignored, so if it is either, it
-unblocks the signal and resets its action to the default first. A program that blocks
+unblocks the signal and resets its action to the default first. Its
+siginfo is always the fault's, with the cause and the address the
+architecture found (below). A program that blocks
 `SIGSEGV` and then faults dies. The signal is the faulting thread's: no
 other thread could take it in its place.
 
@@ -159,18 +164,39 @@ never has to stop in the middle of its own code to deal with one. A
 system call either finishes, or, if it sleeps, is woken and returns, and
 the signal is taken after. The kernel stack is never left halfway.
 
+### The siginfo
+
+Each signal comes with a `struct aquila_siginfo`
+([`include/uapi/aquila/signal.h`](../../include/uapi/aquila/signal.h), the
+C library's `siginfo_t`), made when it's sent and kept while it's
+pending. The handler gets it as its second argument, and
+`sigtimedwait()` writes it out. `si_code` says why the signal came:
+
+| Sent by                                   | `si_code`         | Also                               |
+|-------------------------------------------|-------------------|------------------------------------|
+| `kill()`, `pthread_kill()`, `raise()`     | `SI_USER`         | `si_pid`, `si_uid`: the sender     |
+| the kernel: a terminal, the timer, a pipe | `SI_KERNEL`       |                                    |
+| a child (`SIGCHLD`)                       | `CLD_EXITED`, `CLD_KILLED`, `CLD_STOPPED`, `CLD_CONTINUED` | `si_pid`, `si_uid`: the child; `si_status`: its exit code, or the signal |
+| a fault                                   | the architecture's: `SEGV_MAPERR`, `SEGV_ACCERR`, `BUS_ADRALN`, `ILL_ILLOPC`, `FPE_INTDIV`, `TRAP_BRKPT`... | `si_addr`: the address that faulted (`SIGSEGV`, `SIGBUS`), or the instruction (`SIGILL`, `SIGFPE`, `SIGTRAP`) |
+
+The names are POSIX's, the numbers Linux's. A fault's code comes from
+the architecture, except for the page faults that can't be resolved: the
+generic `mm_page_fault()` says whether the address has no mapping
+(`-EFAULT`, `SEGV_MAPERR`) or one that doesn't allow the access
+(`-EACCES`, `SEGV_ACCERR`).
+
 ### Running a handler
 
 To run a handler, the architecture changes the user-mode registers the
 thread is about to return to (`deliver()`):
 
 1. the registers the thread had, the current mask and the FPU state are
-   saved in a *signal frame* on the user stack;
+   saved in a *signal frame* on the user stack, or on the thread's
+   alternate stack (below);
 2. the return address on the stack is the **sigcode** page's;
 3. the instruction pointer becomes the handler's, the stack pointer the
-   frame's, and the arguments are the signal number and a `siginfo`
-   (with the faulting address for `SIGSEGV`, `SIGBUS`, `SIGILL` and
-   `SIGFPE`);
+   frame's, and the arguments are the signal number, the siginfo and the
+   ucontext, both in the frame;
 4. the mask becomes the old one plus the action's `sa_mask` and the
    signal itself (unless `SA_NODEFER`); with `SA_RESETHAND` the action
    goes back to the default.
@@ -178,9 +204,10 @@ thread is about to return to (`deliver()`):
 The thread returns to user mode, in the handler. When the handler
 returns, it returns into the sigcode page, which makes one system call,
 `sigreturn()`: the architecture reads the frame back from the user
-stack, and puts the registers, the mask and the FPU state back as they
-were (`arch_sigreturn()`). The thread returns to user mode where it was
-when the signal came.
+stack, and puts the registers and the mask back from the ucontext, and
+the FPU state from the frame (`arch_sigreturn()`). The thread returns to
+user mode where it was when the signal came, unless the handler changed
+the ucontext.
 
 The **sigcode** page is mapped in every process, read and execute only,
 below the stack (`SIGCODE_ADDR`), by `exec` (`arch_sigcode_map()`). It's
@@ -196,10 +223,51 @@ process with `SIGSEGV`; one that can't be read back gets it `SIGSEGV`.
 A frame's registers are checked before they're loaded: user-mode
 segments only, no flags user mode couldn't set itself.
 
-Every handler gets the `siginfo`, as with `SA_SIGINFO`; its third
-argument, the `ucontext`, is `NULL`. There is no alternate signal stack
-(`sigaltstack()`). The handler's mask (step 4) is the thread's that
-takes the signal.
+Every handler gets the siginfo and the ucontext, as with `SA_SIGINFO`.
+The handler's mask (step 4) is the thread's that takes the signal.
+
+### The ucontext
+
+The handler's third argument is a `struct aquila_ucontext`
+([`include/uapi/aquila/ucontext.h`](../../include/uapi/aquila/ucontext.h),
+the C library's `ucontext_t` in `<ucontext.h>`), in the frame:
+
+```c
+struct aquila_ucontext {
+    unsigned long          uc_link;     /* 0 */
+    unsigned long          uc_sigmask;  /* the mask sigreturn restores */
+    struct aquila_stack    uc_stack;    /* the alternate stack */
+    struct aquila_mcontext uc_mcontext; /* the registers */
+};
+```
+
+`uc_mcontext` is the registers user code sees, by name, which depend on
+the architecture: `rip`, `rsp`, `rax`... on x86_64, `eip`, `esp`... on
+i386, `x[31]`, `sp`, `pc`, `pstate` on aarch64. The architecture copies
+them out of the context saved on the kernel stack, and back in at
+`sigreturn`, so a handler that changes `uc_mcontext` or `uc_sigmask`
+changes where and how the program goes on: past a faulting instruction,
+say, or with a signal blocked. They're checked as before: what user
+mode couldn't set itself is ignored. The FPU state is in the frame too,
+but not in the ucontext. There is no `getcontext()` or `makecontext()`
+(POSIX removed them), so `uc_link` is always 0.
+
+### The alternate stack
+
+A handler runs on the stack the thread was on. That's no good for the
+`SIGSEGV` of a stack overflow: there's no room left for its frame, the
+frame can't be written, and the process dies. So a thread can have an
+*alternate stack*, set with `sigaltstack()` (`thread->sig_altstack`), on
+which the handlers whose action has `SA_ONSTACK` run.
+
+`deliver()` asks `signal_altstack_top()` where the frame goes: the top of
+the alternate stack if the action has `SA_ONSTACK`, the thread has one,
+and isn't on it already (a handler interrupted there goes on below where
+it was, as on its own stack). `sigaltstack()` reports `SS_ONSTACK` while
+the thread runs on it, and refuses to change it then (`EPERM`); it's at
+least `MINSIGSTKSZ` (2048 bytes) long, room for a frame. Each thread has
+its own; a new thread has none, a fork's child has its parent thread's,
+and `exec` drops it, since its memory went with the old program.
 
 ### Stopping and continuing
 
@@ -272,18 +340,19 @@ stack pointer), 16-byte aligned:
 ```c
 struct sigframe {
     struct aquila_siginfo info; /* the handler's siginfo */
-    sigset_t mask;              /* sigreturn restores it */
+    struct aquila_ucontext uc;  /* the mask and the interrupted registers */
     uint32_t fpu;               /* fxsave below is the thread's state */
-    struct x86_regs regs;       /* the interrupted context */
     uint8_t fxsave[512] __aligned(16);
 };
 ```
 
 Below it, what a `call` would have left: on i386 the return address
 (the sigcode page) and the handler's three arguments on the stack
-(signal, `&info`, `NULL`), padded so the stack is aligned as the ABI
+(signal, `&info`, `&uc`), padded so the stack is aligned as the ABI
 wants at a function's entry; on x86_64 the return address only, the
-arguments in `rdi`, `rsi`, `rdx`. The handler starts with a clean FPU,
+arguments in `rdi`, `rsi`, `rdx`. On the alternate stack, the frame goes
+from its top, and on x86_64 the red zone is left out: nothing was using
+that stack. The handler starts with a clean FPU,
 and the direction flag clear.
 
 The sigcode page holds three instructions:
@@ -296,9 +365,16 @@ ud2
 
 `arch_sigreturn()` finds the frame from the stack pointer (the handler's
 `ret` popped the return address), reads it back with `copyin()`, and
-replaces the saved user context with the frame's `regs`, with `cs` and
-`ss` set to user mode's, and only the flags user code may set
-(`USER_FLAGS`: not `IF`, not `IOPL`). `arch_syscall()` doesn't treat
+puts the ucontext's registers in the saved user context, with only the
+flags user code may set (`USER_FLAGS`: not `IF`, not `IOPL`). The
+segments aren't in the ucontext: they stay user mode's.
+
+The exceptions' `si_code`s come from `int_code[]` in
+[`cpu/isr.c`](../../kernel/arch/i386/cpu/isr.c): `#DE` is
+`FPE_INTDIV`, `#UD` `ILL_ILLOPN`, `#BP` `TRAP_BRKPT`, `#AC`
+`BUS_ADRALN`, `#GP` `SI_KERNEL`. For the FPU's, `#MF` and `#XM`,
+`x86_fpu_fault_code()` reads which exception it was (invalid, divide
+by zero, overflow...) from the x87 status word or from `MXCSR`. `arch_syscall()` doesn't treat
 `sigreturn` as an interrupted call: `eax` is the frame's, not a result.
 
 The sigcode page is a `vm_object` of its own with a pager that makes the
@@ -320,32 +396,39 @@ red zone), 16-byte aligned:
 ```c
 struct sigframe {
     struct aquila_siginfo info;
-    sigset_t mask;
+    struct aquila_ucontext uc;  /* the mask and the interrupted registers */
     uint64_t fpsimd_valid;      /* fpsimd below is the thread's state */
-    struct aarch64_regs regs;   /* the interrupted context */
     uint8_t fpsimd[FPSIMD_STATE_SIZE] __aligned(16);
 };
 ```
 
 The handler gets its arguments in `x0`, `x1`, `x2` (signal, `&info`,
-`NULL`), and its return address in `x30`, the sigcode page's. Unlike
+`&uc`), and its return address in `x30`, the sigcode page's. Unlike
 x86's, it starts with the FP/SIMD registers as they were, not cleared.
 The sigcode page holds `mov x8, #SYS_sigreturn`, `svc #0` and `udf #0`;
 `sigcode_in()` also makes the instruction cache see it.
 
 `arch_sigreturn()` reads the frame at the stack pointer, puts the
-registers back with only the flags user code may set (`USER_FLAGS`:
-`N`, `Z`, `C`, `V`; the mode is EL0's and the interrupts unmasked), and
-the FP/SIMD state back (`aarch64_fpsimd_restore()`).
+ucontext's registers back with only the flags user code may set
+(`USER_FLAGS`: `N`, `Z`, `C`, `V`; the mode is EL0's and the interrupts
+unmasked), and the FP/SIMD state back (`aarch64_fpsimd_restore()`).
+
+A fault's `si_code` comes from the exception's syndrome
+([`cpu/trap.c`](../../kernel/arch/aarch64/cpu/trap.c)): a data abort
+that is an alignment fault is `SIGBUS`'s `BUS_ADRALN`, another one
+`SIGSEGV`'s `SEGV_MAPERR` or `SEGV_ACCERR`; a misaligned PC or stack
+`BUS_ADRALN`; `brk` `TRAP_BRKPT`; an undefined instruction
+`ILL_ILLOPC`.
 
 ## Where it is
 
 | File                                | Layer   | What                                         |
 |-------------------------------------|---------|----------------------------------------------|
-| `include/uapi/aquila/signal.h`      | kernel  | the numbers, `siginfo`, `sigaction` and its flags (shared with the C library) |
+| `include/uapi/aquila/signal.h`      | kernel  | the numbers, `siginfo` and its codes, `sigaction` and its flags, the alternate stack (shared with the C library) |
+| `include/uapi/aquila/ucontext.h`    | kernel  | the ucontext, and each architecture's registers in it |
 | `kernel/include/sys/signal.h`       | kernel  | the interface, `ERESTARTSYS`, `ERESTARTNOHAND` |
 | `kernel/sys/signal.c`               | kernel  | default actions, sending, taking, stopping   |
-| `kernel/sys/sys_signal.c`           | kernel  | `kill`, `thread_kill`, `sigaction`, `sigprocmask`, `sigpending`, `sigsuspend`, `sigtimedwait`, `sigreturn` |
+| `kernel/sys/sys_signal.c`           | kernel  | `kill`, `thread_kill`, `sigaction`, `sigprocmask`, `sigpending`, `sigsuspend`, `sigtimedwait`, `sigaltstack`, `sigreturn` |
 | `kernel/sys/sys_poll.c`             | kernel  | `select`'s mask                              |
 | `kernel/sys/proc.c`                 | kernel  | `SIGCHLD`, orphaned groups                   |
 | `kernel/dev/tty/generic.c`          | kernel  | the terminal's signals                       |
@@ -364,7 +447,8 @@ the FP/SIMD state back (`aarch64_fpsimd_restore()`).
   Concepts* (2.4), including *Signal Generation and Delivery* (which
   thread takes a process's signal), `sigaction()`, `sigprocmask()`,
   `pthread_sigmask()`, `pthread_kill()`, `sigsuspend()`, `sigtimedwait()`,
-  `pselect()`, `kill()`, and *Interruption of system calls*.
+  `sigaltstack()`, `<signal.h>` (the `si_code` values), `pselect()`,
+  `kill()`, and *Interruption of system calls*.
 - *Advanced Programming in the UNIX Environment*, W. Richard Stevens and
   Stephen A. Rago: chapter 10, signals as programs see them, and the
   history of their unreliable first versions.

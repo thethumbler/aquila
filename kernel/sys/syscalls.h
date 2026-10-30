@@ -141,6 +141,7 @@ long sys_gettimeofday(struct timeval *tv, struct timezone *tz);
 long sys_sigmask(int how, const sigset_t *set, sigset_t *oldset);
 long sys_sigsuspend(const sigset_t *set);
 long sys_sigpending(sigset_t *set);
+long sys_sigaltstack(const struct aquila_stack *ss, struct aquila_stack *oss);
 long sys_sigreturn(void);
 long sys_setitimer(int which, const struct aquila_itimer *new, struct aquila_itimer *old);
 long sys_nanosleep(const struct aquila_timespec *req, struct aquila_timespec *rem);

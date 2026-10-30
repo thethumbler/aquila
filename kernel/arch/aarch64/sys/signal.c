@@ -10,11 +10,12 @@
  * x0 (the result took its place), or fails with `EINTR`. A handler runs by
  * rewriting the user context saved on the kernel stack.
  *
- * The handler's frame, a `struct sigframe` on the user stack, holds the
- * siginfo, the mask to restore, and the interrupted registers. The handler
- * is called with the signal in x0, the siginfo in x1, and no ucontext in
- * x2, and it returns (through x30) into the sigcode page, which makes the
- * `sigreturn` system call.
+ * The handler's frame, a `struct sigframe` on the user stack (or the
+ * alternate stack, with `SA_ONSTACK`), holds the siginfo, the ucontext
+ * (the mask to restore and the interrupted registers) and the FP/SIMD
+ * state. The handler is called with the signal in x0, the siginfo in x1
+ * and the ucontext in x2, and it returns (through x30) into the sigcode
+ * page, which makes the `sigreturn` system call.
  */
 
 #include <core/system.h>
@@ -31,6 +32,7 @@
 #include <sys/uaccess.h>
 
 #include <aquila/syscall.h>
+#include <aquila/ucontext.h>
 
 /* The flags that user code may set: N, Z, C and V. */
 #define USER_FLAGS  0xF0000000UL
@@ -38,9 +40,9 @@
 /* A signal handler's frame, on the user stack. */
 struct sigframe {
     struct aquila_siginfo info;
-    sigset_t mask;              /* the mask that sigreturn restores */
+    struct aquila_ucontext uc;  /* the interrupted context, and the mask
+                                 * that sigreturn restores */
     uint64_t fpsimd_valid;      /* whether fpsimd holds the thread's state */
-    struct aarch64_regs regs;   /* the interrupted context */
     uint8_t fpsimd[FPSIMD_STATE_SIZE] __aligned(16);
 } __aligned(16);
 
@@ -133,7 +135,7 @@ int arch_sigcode_map(struct proc *proc)
 /** Sets up the user context `r` so that the handler of `sig` runs when
  * it's returned to. A frame that can't be written ends the process with
  * `SIGSEGV`. */
-static void deliver(struct aarch64_regs *r, int sig)
+static void deliver(struct aarch64_regs *r, int sig, const struct aquila_siginfo *info)
 {
     struct thread *thread = curthread;
     struct proc *proc = curproc;
@@ -144,21 +146,27 @@ static void deliver(struct aarch64_regs *r, int sig)
     sigset_t mask = thread->sig_oldmask_set ? thread->sig_oldmask : thread->sigmask;
     thread->sig_oldmask_set = 0;
 
-    uintptr_t f = (r->sp - sizeof(struct sigframe)) & ~(uintptr_t) 15;
+    /* on the alternate stack, from its top, or below where the thread
+     * was */
+    uintptr_t sp = signal_altstack_top(thread, sa, r->sp);
+
+    if (!sp)
+        sp = r->sp;
+
+    uintptr_t f = (sp - sizeof(struct sigframe)) & ~(uintptr_t) 15;
 
     /* make the frame here, zeroed so that nothing of the kernel's goes
      * out */
     struct sigframe frame;
     struct sigframe *uframe = (struct sigframe *) f;
-    int fault = sig == SIGSEGV || sig == SIGBUS || sig == SIGILL || sig == SIGFPE;
-
     memset(&frame, 0, sizeof(frame));
-    frame.info = (struct aquila_siginfo) {
-        .si_signo = sig,
-        .si_addr  = fault ? thread->fault_addr : 0,
-    };
-    frame.mask = mask;
-    frame.regs = *r;
+    frame.info = *info;
+    frame.uc.uc_sigmask = mask;
+    signal_altstack_get(thread, r->sp, &frame.uc.uc_stack);
+    memcpy(frame.uc.uc_mcontext.x, r->x, sizeof(r->x));
+    frame.uc.uc_mcontext.sp = r->sp;
+    frame.uc.uc_mcontext.pc = r->pc;
+    frame.uc.uc_mcontext.pstate = r->pstate;
 
     /* save the FP/SIMD registers as they are, since the handler may use
      * them */
@@ -171,12 +179,12 @@ static void deliver(struct aarch64_regs *r, int sig)
 
     /* there's nowhere to put the frame: as with a fault, the process
      * can't go on */
-    if (r->sp < 4096 || copyout(uframe, &frame, sizeof(frame)))
+    if (sp < 4096 || copyout(uframe, &frame, sizeof(frame)))
         signal_exit(SIGSEGV);
 
     r->x[0]  = sig;
     r->x[1]  = (uintptr_t) &uframe->info;
-    r->x[2]  = 0;
+    r->x[2]  = (uintptr_t) &uframe->uc;
     r->x[30] = SIGCODE_ADDR;
     r->pc    = sa->sa_handler;
     r->sp    = f;
@@ -206,7 +214,8 @@ void aarch64_return_to_user(struct aarch64_regs *r, int syscall)
         return;
 
     struct proc *proc = thread->owner;
-    int sig = signal_take();
+    struct aquila_siginfo info;
+    int sig = signal_take(&info);
 
     /* a system call that a signal interrupted runs again if no handler
      * runs or the handler has `SA_RESTART`, and fails with `EINTR`
@@ -233,7 +242,7 @@ void aarch64_return_to_user(struct aarch64_regs *r, int syscall)
     }
 
     if (sig) {
-        deliver(r, sig);
+        deliver(r, sig, &info);
     } else if (thread->sig_oldmask_set) {
         /* `sigsuspend()` is restarted: put back the mask it replaced */
         thread->sigmask = thread->sig_oldmask;
@@ -242,8 +251,8 @@ void aarch64_return_to_user(struct aarch64_regs *r, int syscall)
 }
 
 /* Returns from a signal handler, for `sigreturn()`: restores the
- * registers, mask and FP/SIMD state from its frame. A bad frame gets
- * `SIGSEGV`. */
+ * registers and the mask from its ucontext, and the FP/SIMD state from its
+ * frame. A bad frame gets `SIGSEGV`. */
 void arch_sigreturn(void)
 {
     struct aarch64_thread *arch = curthread->arch;
@@ -253,17 +262,29 @@ void arch_sigreturn(void)
     struct sigframe frame;
 
     if ((f & 15) || copyin(&frame, (void *) f, sizeof(frame))) {
-        signal_force(curthread, SIGSEGV);
+        signal_force(curthread, SIGSEGV, SI_KERNEL, f);
         return;
     }
 
-    /* restore its registers, but at user mode's level, and only the
-     * flags that it could set itself */
-    uint64_t pstate = frame.regs.pstate & USER_FLAGS;
+    /* restore the ucontext's registers, but at user mode's level, and
+     * only the flags that it could set itself */
+    struct aquila_mcontext *mc = &frame.uc.uc_mcontext;
 
-    *r = frame.regs;
-    r->pstate = pstate;
+    memcpy(r->x, mc->x, sizeof(r->x));
+    r->sp = mc->sp;
+    r->pc = mc->pc;
+    r->pstate = mc->pstate & USER_FLAGS;
 
-    curthread->sigmask = frame.mask & ~SIG_UNMASKABLE;
+    curthread->sigmask = frame.uc.uc_sigmask & ~SIG_UNMASKABLE;
     aarch64_fpsimd_restore(curthread, frame.fpsimd_valid ? frame.fpsimd : NULL);
+}
+
+/*
+ * Returns the user stack pointer of the current thread, from the context
+ * it entered the kernel with.
+ */
+uintptr_t arch_user_sp(void)
+{
+    struct aarch64_thread *arch = curthread->arch;
+    return arch->regs->sp;
 }

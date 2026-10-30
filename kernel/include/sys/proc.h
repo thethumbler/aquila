@@ -149,6 +149,9 @@ struct proc {
      *  pending signals and mask too (struct thread) */
     sigset_t sig_pending;
 
+    /** each pending signal's siginfo: the first sending's */
+    struct aquila_siginfo sig_info[SIG_MAX+1];
+
     /** a parent waiting for a child (waitpid()) sleeps here */
     struct waitq wait_queue;
 
