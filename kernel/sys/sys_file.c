@@ -385,7 +385,10 @@ static int do_openat(int dirfd, const char *upath, int oflags, mode_t mode)
     }
 
     file->vnode = vnode;
-    file->flags = oflags & ~O_CLOEXEC;
+
+    /* FILE_SOCKET is the kernel's: a file opened with it would pass for a
+     * socket */
+    file->flags = oflags & ~(O_CLOEXEC | FILE_SOCKET);
 
     /* the creator may open the file, whatever permissions it gave it */
     if (!created && (ret = vfs_perms_check(file, &uio)))
