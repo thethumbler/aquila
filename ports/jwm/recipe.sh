@@ -7,8 +7,8 @@
 #
 # 2.3.7, the last of 2.3: from 2.4 on, JWM draws antialiased text only
 # through Pango (glib, and HarfBuzz, in C++), and with core X fonts
-# without it; 2.3 draws it with Xft. (aquila.patch: its configuration
-# mapped MAP_PRIVATE; JPEG images decoded at a scale too small)
+# without it; 2.3 draws it with Xft. (aquila.patch: JPEG images were
+# decoded at a scale too small)
 
 NAME=jwm
 VERSION=2.3.7
