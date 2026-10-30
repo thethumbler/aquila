@@ -611,6 +611,247 @@ static void *pt_thread(void *arg)
     return arg;
 }
 
+/* signals and threads: each thread's own mask, a process's signal taken
+ * by a thread that doesn't block it, pthread_kill(), sigwait(), and
+ * detached threads */
+static volatile pthread_t ps_handled_by;
+static volatile int ps_handled, ps_go, ps_done, ps_waited, ps_blocked_in_thread;
+
+static void ps_handler(int sig)
+{
+    (void) sig;
+    ps_handled_by = pthread_self();
+    ps_handled++;
+}
+
+/* the mask it started with (its creator's), then waits until told */
+static void *ps_thread(void *arg)
+{
+    sigset_t mask;
+
+    pthread_sigmask(SIG_BLOCK, NULL, &mask);
+    ps_blocked_in_thread = sigismember(&mask, SIGUSR1);
+
+    if (arg) {
+        /* takes SIGUSR1 from here on */
+        sigset_t one;
+        sigemptyset(&one);
+        sigaddset(&one, SIGUSR1);
+        pthread_sigmask(SIG_UNBLOCK, &one, NULL);
+    }
+
+    while (!ps_go)
+        usleep(1000);
+
+    return NULL;
+}
+
+static void *ps_waiter(void *arg)
+{
+    (void) arg;
+    sigset_t set;
+    int sig = 0;
+
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR1);
+    ps_waited = sigwait(&set, &sig) == 0 ? sig : -1;
+    return NULL;
+}
+
+static void *ps_short(void *arg)
+{
+    (void) arg;
+    ps_done = 1;
+    return NULL;
+}
+
+/* a thread that writes to a pipe every millisecond, in a child that is
+ * stopped and continued */
+static void *ps_ticker(void *arg)
+{
+    int fd = (int) (long) arg;
+
+    for (;;) {
+        write(fd, "t", 1);
+        usleep(1000);
+    }
+
+    return NULL;
+}
+
+/* what the pipe has now, without waiting */
+static int ps_drain(int fd)
+{
+    char buf[256];
+    int n = 0, r;
+
+    while ((r = read(fd, buf, sizeof(buf))) > 0)
+        n += r;
+
+    return n;
+}
+
+static void test_pthread_signals(void)
+{
+    struct sigaction sa = {0};
+    sa.sa_handler = ps_handler;
+    sigaction(SIGUSR1, &sa, NULL);
+    sigaction(SIGUSR2, &sa, NULL);
+
+    sigset_t usr1, old, pending;
+    sigemptyset(&usr1);
+    sigaddset(&usr1, SIGUSR1);
+
+    /* the main thread blocks SIGUSR1; a new thread starts blocking it
+     * too, then unblocks it for itself alone */
+    pthread_sigmask(SIG_BLOCK, &usr1, &old);
+    pthread_t t;
+    ps_go = 0;
+    check("signals: pthread_create", pthread_create(&t, NULL, ps_thread, (void *) 1), 0);
+    usleep(20000);
+    check("signals: a new thread has its creator's mask", ps_blocked_in_thread, 1);
+
+    sigset_t now;
+    pthread_sigmask(SIG_BLOCK, NULL, &now);
+    check("signals: the thread's unblock isn't the main thread's", sigismember(&now, SIGUSR1), 1);
+
+    /* sent to the process: the thread that doesn't block it takes it */
+    ps_handled = 0;
+    kill(getpid(), SIGUSR1);
+    for (int i = 0; i < 200 && !ps_handled; ++i)
+        usleep(1000);
+    check("signals: kill() taken by the thread not blocking it",
+          ps_handled == 1 && pthread_equal(ps_handled_by, t), 1);
+
+    /* sent to a thread: that one takes it */
+    ps_handled = 0;
+    check("signals: pthread_kill", pthread_kill(t, SIGUSR2), 0);
+    for (int i = 0; i < 200 && !ps_handled; ++i)
+        usleep(1000);
+    check("signals: pthread_kill taken by that thread",
+          ps_handled == 1 && pthread_equal(ps_handled_by, t), 1);
+
+    /* sent to the main thread, which blocks it: pending for it alone */
+    ps_handled = 0;
+    pthread_kill(pthread_self(), SIGUSR1);
+    usleep(20000);
+    sigpending(&pending);
+    check("signals: blocked pthread_kill stays pending on that thread",
+          !ps_handled && sigismember(&pending, SIGUSR1), 1);
+    sigset_t got_set = usr1;
+    int got = 0;
+    check("signals: sigwait takes it", sigwait(&got_set, &got) == 0 && got == SIGUSR1 && !ps_handled, 1);
+
+    ps_go = 1;
+    pthread_join(t, NULL);
+
+    check("signals: pthread_kill bad signal", pthread_kill(pthread_self(), 99), EINVAL);
+    check("signals: pthread_kill gone thread", pthread_kill(t, 0), ESRCH);
+
+    /* sigwait in a thread: a process's signal goes to it, not to a
+     * handler, though every thread blocks it */
+    ps_waited = 0;
+    ps_handled = 0;
+    pthread_create(&t, NULL, ps_waiter, NULL);
+    usleep(20000);
+    kill(getpid(), SIGUSR1);
+    pthread_join(t, NULL);
+    check("signals: sigwait in a thread gets kill()'s signal", ps_waited == SIGUSR1 && !ps_handled, 1);
+
+    /* sigtimedwait: the time runs out, or the signal is there */
+    struct timespec ts = {0, 50000000};
+    siginfo_t si;
+    errno = 0;
+    check("signals: sigtimedwait times out", sigtimedwait(&usr1, &si, &ts) == -1 && errno == EAGAIN, 1);
+    kill(getpid(), SIGUSR1);
+    memset(&si, 0, sizeof(si));
+    check("signals: sigwaitinfo", sigwaitinfo(&usr1, &si) == SIGUSR1 && si.si_signo == SIGUSR1, 1);
+    ts.tv_nsec = 1000000000;
+    errno = 0;
+    check("signals: sigtimedwait bad time", sigtimedwait(&usr1, &si, &ts) == -1 && errno == EINVAL, 1);
+
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    sa.sa_handler = SIG_DFL;
+    sigaction(SIGUSR1, &sa, NULL);
+    sigaction(SIGUSR2, &sa, NULL);
+
+    /* detached threads: freed as soon as they exit, whether detached
+     * before or after; no one joins them */
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    ps_done = 0;
+    check("detach: created detached", pthread_create(&t, &attr, ps_short, NULL), 0);
+    for (int i = 0; i < 200 && !ps_done; ++i)
+        usleep(1000);
+    usleep(20000);
+    check("detach: gone once it exits", pthread_join(t, NULL), ESRCH);
+
+    ps_go = 0;
+    pthread_create(&t, NULL, ps_thread, NULL);
+    check("detach: a running thread", pthread_detach(t), 0);
+    check("detach: twice", pthread_detach(t), EINVAL);
+    check("detach: join a detached thread", pthread_join(t, NULL), EINVAL);
+    ps_go = 1;
+    usleep(50000);
+    check("detach: gone once it ends", pthread_join(t, NULL), ESRCH);
+
+    ps_done = 0;
+    pthread_create(&t, NULL, ps_short, NULL);
+    for (int i = 0; i < 200 && !ps_done; ++i)
+        usleep(1000);
+    usleep(20000);
+    check("detach: one that has ended", pthread_detach(t) == 0 && pthread_join(t, NULL) == ESRCH, 1);
+
+    /* threads' stacks are freed: made and joined, or detached, over and
+     * over, the heap stays put */
+    char *brk0 = sbrk(0);
+    for (int i = 0; i < 300; ++i) {
+        pthread_create(&t, i % 2 ? &attr : NULL, ps_short, NULL);
+        if (i % 2 == 0)
+            pthread_join(t, NULL);
+        else
+            usleep(2000);
+    }
+    usleep(50000);
+    pthread_create(&t, NULL, ps_short, NULL);
+    pthread_join(t, NULL);
+    check("threads: their stacks freed (heap growth under 256 KiB)", (char *) sbrk(0) - brk0 < 256 * 1024, 1);
+    pthread_attr_destroy(&attr);
+
+    /* stopping a process stops all its threads: the ticker of a stopped
+     * child writes nothing until it's continued */
+    int tp[2];
+    pipe(tp);
+    pid_t c = fork();
+    if (!c) {
+        close(tp[0]);
+        pthread_t tick;
+        pthread_create(&tick, NULL, ps_ticker, (void *) (long) tp[1]);
+        for (;;)
+            pause();
+    }
+    close(tp[1]);
+    fcntl(tp[0], F_SETFL, O_NONBLOCK);
+    usleep(50000);
+    int before = ps_drain(tp[0]);
+    int st;
+    kill(c, SIGSTOP);
+    waitpid(c, &st, WUNTRACED);
+    usleep(20000);
+    ps_drain(tp[0]);
+    usleep(100000);
+    int stopped = ps_drain(tp[0]);
+    kill(c, SIGCONT);
+    usleep(50000);
+    int after = ps_drain(tp[0]);
+    kill(c, SIGKILL);
+    waitpid(c, &st, 0);
+    close(tp[0]);
+    check("stop: every thread stops, and goes on when continued",
+          before > 0 && WIFSIGNALED(st) && stopped == 0 && after > 0, 1);
+}
+
 static void test_pthread(void)
 {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
@@ -1249,6 +1490,7 @@ int main(void)
 
     test_x_support();
     test_pthread();
+    test_pthread_signals();
     test_tcp();
     test_err();
     test_resolver();

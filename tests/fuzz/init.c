@@ -453,6 +453,10 @@ static const struct call calls[] = {
     {SYS_getsockopt,    {A_FD, A_INT, A_INT, A_PTR, A_PTR}},
     {SYS_setsockopt,    {A_FD, A_INT, A_INT, A_PTR, A_LEN}},
     {SYS_sigreturn},
+    {SYS_thread_kill,   {A_INT, A_SIG}},
+    {SYS_thread_detach, {A_INT}},
+    {SYS_sigtimedwait,  {A_STRUCT, A_PTR, A_STRUCT}},
+    {SYS_sigpending,    {A_PTR}},
     {0,                 {A_ANY, A_ANY, A_ANY, A_ANY, A_ANY}},   /* any number */
 };
 
@@ -531,6 +535,7 @@ static void fuzz(struct rng *r, unsigned long n)
          * tested */
         if ((nr == SYS_sigreturn || nr == SYS_sigaction || nr == SYS_sigsuspend ||
              nr == SYS_thread_create || nr == SYS_thread_exit || nr == SYS_kill ||
+             nr == SYS_thread_kill ||
              nr == SYS_munmap || nr == SYS_sbrk) && rndn(r, 32))
             continue;
 

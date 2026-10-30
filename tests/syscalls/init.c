@@ -1801,6 +1801,25 @@ void aq_main(void)
     }
     check("threads made and joined, new ids", tids_ok, 1);
 
+    /* threads and signals: bad arguments */
+    int me = SC(SYS_thread_self, 0, 0, 0);
+    check("thread_kill no such thread", SC(SYS_thread_kill, 99999, 0, 0), -ESRCH);
+    check("thread_kill bad signal", SC(SYS_thread_kill, me, 99, 0), -EINVAL);
+    check("thread_kill signal 0", SC(SYS_thread_kill, me, 0, 0), 0);
+    check("thread_kill joined thread", SC(SYS_thread_kill, last, 0, 0), -ESRCH);
+    check("thread_detach no such thread", SC(SYS_thread_detach, 99999, 0, 0), -ESRCH);
+    check("thread_detach joined thread", SC(SYS_thread_detach, last, 0, 0), -ESRCH);
+    struct aquila_thread_args at = {(uptr) &tstack[8192], (uptr) thr, 0, 0, 0, (uptr) KADDR};
+    check("thread alive int in the kernel", SC(SYS_thread_create, &at, 0, 0), -EFAULT);
+    unsigned long wset = 1UL << SIGUSR2;
+    struct aquila_timespec wts = {0, 0};
+    check("sigtimedwait set kaddr", SC(SYS_sigtimedwait, KADDR, 0, &wts), -EFAULT);
+    check("sigtimedwait timeout kaddr", SC(SYS_sigtimedwait, &wset, 0, KADDR), -EFAULT);
+    check("sigtimedwait nothing pending, no wait", SC(SYS_sigtimedwait, &wset, 0, &wts), -EAGAIN);
+    wts.tv_nsec = 1000000000;
+    check("sigtimedwait bad nsec", SC(SYS_sigtimedwait, &wset, 0, &wts), -EINVAL);
+    check("sigpending kaddr", SC(SYS_sigpending, KADDR, 0, 0), -EFAULT);
+
     /* sockets */
     int s = SC(SYS_socket, AF_UNIX, SOCK_STREAM, 0);
     struct sockaddr_un sun = {AF_UNIX, "/init"};
