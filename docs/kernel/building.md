@@ -339,6 +339,7 @@ They're skipped when what they need wasn't built.
 | `memory`   | more RAM than 4 GiB (or than i386's direct map) filled and read back   |
 | `oom`      | out of memory (128 MiB): a process with none left is killed, the system goes on and has its memory back |
 | `kvmem`    | the kernel's allocator: its self-test, no leaks after forks and execs, guard pages |
+| `fuzz`     | system calls with bad arguments, at random from a seed, for 30 s: the kernel survives them |
 | `clock`    | the clock from each source (TSC, HPET, PIT), against the host's time  |
 | `irq`      | interrupts through the APIC and the 8259, `/proc/interrupts`, the timer's rate, MSI |
 | `smp`      | four CPUs: threads at once, TLB shootdown, `fork`, `exec` and kills across CPUs, `smp=off` |
@@ -365,7 +366,7 @@ tests/run.sh [-a arch] [-C cc] [-c cpus] [-j jobs] [-k args] [-n] [-v] [test...]
 
 | Option | What                                                                         |
 |--------|------------------------------------------------------------------------------|
-| `-a`   | the architecture: `x86_64` (default), `i386`, or `aarch64` (QEMU's virt machine, built with clang: the `aarch64` and `oom` tests) |
+| `-a`   | the architecture: `x86_64` (default), `i386`, or `aarch64` (QEMU's virt machine, built with clang: the `aarch64`, `oom` and `fuzz` tests) |
 | `-C`   | the kernel's compiler, on x86: `gcc` (default) or `tcc` (above), built into `tests/out/<arch>-tcc/` |
 | `-c`   | the number of CPUs QEMU has, for every boot (but the `irq` and `smp` tests, which choose) |
 | `-j`   | the tests run at once (default 1); those that time things or take much memory (`clock`, `irq`, `smp`, `memory`) run alone, after |

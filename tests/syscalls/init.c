@@ -20,7 +20,9 @@
  *   kept across a handler, the handler's signal blocked (SA_NODEFER),
  *   sa_mask, SA_RESETHAND, the mask restored, nested handlers,
  *   sigsuspend's EINTR and mask, a read stopped and continued is made
- *   again, sigreturn with a forged frame stays in user mode; a forked
+ *   again, sigreturn with a forged frame stays in user mode, and one
+ *   returning past user space kills (SIGSEGV), as is a handler there
+ *   refused; a forked
  *   child has its parent's SSE state
  * - orphans: init's, a stopped orphaned group's SIGHUP and SIGCONT, the
  *   terminal's stops and reads in an orphaned group
@@ -757,6 +759,22 @@ static void forged_sigreturn(void)
     sigreturn_at((uptr) &forged);
 }
 
+/* past user space: on x86_64 not canonical, which iretq refuses */
+#ifdef __x86_64__
+#define PAST_USER   0x8000000000000000ul
+#else
+#define PAST_USER   KADDR
+#endif
+
+/* a frame as a handler's return finds it, but returning past user space */
+static void past_user_sigreturn(void)
+{
+    forged.regs.ip = PAST_USER;
+    forged.regs.sp = (uptr) landing_stack + sizeof(landing_stack) - sizeof(uptr);
+    forged.regs.flags = 0x202;
+    sigreturn_at((uptr) &forged);
+}
+
 static void garbage_sigreturn(void)
 {
     /* nothing mapped there */
@@ -878,6 +896,9 @@ static void exit_path_signals(void)
     /* sigreturn can't leave user mode, a frame nowhere kills */
     check("signal: forged sigreturn stays in user mode", aq_child_status(forged_sigreturn), 0);
     check("signal: sigreturn with no frame: SIGSEGV", aq_child_status(garbage_sigreturn) & 0x7f, SIGSEGV);
+    check("signal: sigreturn past user space: SIGSEGV", aq_child_status(past_user_sigreturn) & 0x7f, SIGSEGV);
+    struct aquila_sigaction past = {PAST_USER, 0, 0};
+    check("signal: a handler past user space refused", SC(SYS_sigaction, SIGUSR1, &past, 0), -EFAULT);
     check("cpu: user mode's %gs, null, its own", aq_child_status(user_gs), 0);
 
     sa = (struct aquila_sigaction) {0, 0, 0};
@@ -977,6 +998,12 @@ static void user_memory_child(void)
     /* a new thread's stack, the arguments of a program */
     struct aquila_thread_args ut = {(uptr) hole + 4096, (uptr) thr, 0, 0, 0};
     check("umem: thread stack", SC(SYS_thread_create, &ut, 0, 0), -EFAULT);
+    struct aquila_thread_args kt = {(uptr) landing_stack + sizeof(landing_stack), KADDR, 0, 0, 0};
+    check("thread: starting in the kernel", SC(SYS_thread_create, &kt, 0, 0), -EINVAL);
+#ifdef __x86_64__
+    kt.entry = 0x8000000000000000ul;
+    check("thread: starting at an address not canonical", SC(SYS_thread_create, &kt, 0, 0), -EINVAL);
+#endif
     char *argv[] = {"/init", hole, 0};
     check("umem: execve argument", SC(SYS_execve, "/init", argv, 0), -EFAULT);
 
@@ -1545,6 +1572,37 @@ void aq_main(void)
         check("pipe3 close w", SC(SYS_close, p[1], 0, 0), 0);
     }
 
+    /* two writers waiting for room in a full pipe: they wait, and don't
+     * wake each other up again and again (the pipe's readers and writers
+     * share a wait queue), which kept the kernel busy for good */
+    {
+        static char big[65536];
+        int p[2], w[2];
+        SC(SYS_pipe, p, 0, 0);
+
+        for (int i = 0; i < 2; ++i) {
+            if (!(w[i] = SC(SYS_fork, 0, 0, 0))) {
+                SC(SYS_close, p[0], 0, 0);
+                SC(SYS_exit, SC(SYS_write, p[1], big, sizeof(big)) == sizeof(big) ? 0 : 1, 0, 0);
+            }
+        }
+
+        SC(SYS_close, p[1], 0, 0);
+        struct aquila_timespec ts = {0, 200000000};
+        check("pipe: two writers waiting for room, the others run", SC(SYS_nanosleep, &ts, 0, 0), 0);
+
+        long total = 0, r;
+        while ((r = SC(SYS_read, p[0], big, sizeof(big))) > 0)
+            total += r;
+        check("pipe: then all both wrote", total, 2 * sizeof(big));
+
+        int st0 = -1, st1 = -1;
+        SC(SYS_waitpid, w[0], &st0, 0);
+        SC(SYS_waitpid, w[1], &st1, 0);
+        check("pipe: both writers done", st0 | st1, 0);
+        SC(SYS_close, p[0], 0, 0);
+    }
+
     /* a write larger than a pipe holds, with the reader asleep */
     int bp[2];
     SC(SYS_pipe, bp, 0, 0);
@@ -1702,6 +1760,23 @@ void aq_main(void)
     aa.addr = (void *) 0x40000100;
     check("mmap fixed unaligned", SC(SYS_mmap, &aa, &mret, 0), -EINVAL);
 
+#ifdef __x86_64__
+    /* a large mapping with one page in it: fork() and munmap() go over
+     * its page tables, not its 4 billion pages */
+    {
+        struct aquila_mmap_args large = {0, 1UL << 44, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0};
+        check("mmap 16 TiB", SC(SYS_mmap, &large, &mret, 0), 0);
+        int start = now_ms();
+        ((volatile char *) mret)[12345] = 1;
+        int lc = SC(SYS_fork, 0, 0, 0);
+        if (!lc)
+            SC(SYS_exit, 0, 0, 0);
+        SC(SYS_waitpid, lc, &ast, 0);
+        check("munmap 16 TiB", SC(SYS_munmap, mret, 1UL << 44, 0), 0);
+        check("fork and munmap of 16 TiB with a page in it: quick", now_ms() - start < 1000, 1);
+    }
+#endif
+
     /* threads */
     struct aquila_thread_args ut = {KADDR, (uptr) thr, 0, 0, 0};
     check("thread kstack", SC(SYS_thread_create, &ut, 0, 0), -EFAULT);
@@ -1821,6 +1896,12 @@ void aq_main(void)
         check("shutdown listening", SC(SYS_shutdown, ls, SHUT_RDWR, 0), -ENOTCONN);
         check("shutdown not a socket", SC(SYS_shutdown, aq_out, SHUT_WR, 0), -ENOTSOCK);
         check("shutdown bad fd", SC(SYS_shutdown, 99, SHUT_WR, 0), -EBADF);
+
+        /* the open flags' top bit is the kernel's own "socket" flag: a
+         * file opened with it is still a file */
+        int nf = SC(SYS_open, "/init", O_RDONLY | 0x80000000, 0);
+        check("open with flags of its own: not a socket", SC(SYS_accept, nf, 0, 0), -ENOTSOCK);
+        SC(SYS_close, nf, 0, 0);
         int cpid = SC(SYS_fork, 0, 0, 0);
         if (cpid == 0) {
             int cs = SC(SYS_socket, AF_UNIX, SOCK_STREAM, 0);
@@ -2307,6 +2388,23 @@ void aq_main(void)
     check("pty id reused", ptn, 0);
     check("TIOCSPGRP not our terminal", SC(SYS_ioctl, ptm, TIOCSPGRP, &c), -ENOTTY);
     check("an ioctl terminals don't have", SC(SYS_ioctl, ptm, 0x5401 + 0x1000, &c), -ENOTTY);
+
+    /* two readers waiting for the terminal's output: they wait, and don't
+     * wake each other up again and again, which kept the kernel busy */
+    int rd[2];
+    for (int i = 0; i < 2; ++i) {
+        if (!(rd[i] = SC(SYS_fork, 0, 0, 0))) {
+            char b[16];
+            SC(SYS_read, ptm, b, sizeof(b));
+            SC(SYS_exit, 0, 0, 0);
+        }
+    }
+    struct aquila_timespec rts = {0, 200000000};
+    check("pty: two readers waiting on the master, the others run", SC(SYS_nanosleep, &rts, 0, 0), 0);
+    for (int i = 0; i < 2; ++i) {
+        SC(SYS_kill, rd[i], SIGKILL, 0);
+        SC(SYS_waitpid, rd[i], &st, 0);
+    }
     SC(SYS_close, ptm, 0, 0);
     check("closed pty removed", SC(SYS_stat, "/dev/pts/0", sb, 0), -ENOENT);
     tty_output_modes();

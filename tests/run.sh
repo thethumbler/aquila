@@ -6,7 +6,7 @@
 #
 #   -a      the architecture: x86_64 (default), i386, or aarch64 (QEMU's
 #           virt machine, the kernel and tests built with clang; the
-#           aarch64 and oom tests)
+#           aarch64, oom and fuzz tests)
 #   -C      the kernel's compiler on x86: gcc (default) or tcc (TCC=<tcc>,
 #           tests/host/<arch>-pc-tcc.mk), its build in tests/out/<arch>-tcc
 #   -c      the CPUs QEMU has (-smp), every boot (but the irq and smp
@@ -21,8 +21,8 @@
 # QEMU uses KVM when /dev/kvm can be used, KVM=0 in the environment turns
 # it off.
 #
-# tests: ata cpu syscalls memory oom kvmem clock irq smp net tcp ext2 minix libc system disk tcc curl
-# bash; aarch64 and oom (-a aarch64)
+# tests: ata cpu syscalls memory oom kvmem fuzz clock irq smp net tcp ext2 minix libc system disk
+# tcc curl bash; aarch64, oom and fuzz (-a aarch64)
 # (default: all)
 #
 # Requires gcc with 32-bit support, ld, cpio and qemu-system-x86_64 (and
@@ -39,7 +39,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TESTS=$ROOT/tests
 
-ALL_TESTS="ata cpu syscalls memory oom kvmem clock irq smp net tcp ext2 minix libc system disk tcc curl bash"
+ALL_TESTS="ata cpu syscalls memory oom kvmem fuzz clock irq smp net tcp ext2 minix libc system disk tcc curl bash"
 
 ARCH=x86_64
 build=1
@@ -99,7 +99,7 @@ case $ARCH in
         TEST_CC="clang --target=aarch64-none-elf -fuse-ld=lld"
         TEST_CFLAGS=
         TOOLS="clang ld.lld llvm-objcopy cpio"
-        ALL_TESTS="aarch64 oom"
+        ALL_TESTS="aarch64 oom fuzz"
         CROSS_CC=
         # no KVM: another CPU
         KVM=0 ;;
@@ -408,6 +408,29 @@ test_kvmem()
     fi
 
     echo "self-test passed, ${result%% failed*} failed; a write past an object's end faulted at its guard page"
+}
+
+# system calls with bad arguments, from workers init forks for 30 s
+# (fuzz.secs= on -k: longer): the kernel survives them, kills every one
+# (tests/fuzz/init.c); a panic's log names the seed to replay
+test_fuzz()
+{
+    local log=$OUT/fuzz/serial.log secs
+
+    secs=$(echo "$kargs" | grep -a -o 'fuzz\.secs=[0-9]*' | cut -d= -f2)
+
+    run_qemu "$log" $((${secs:-30} + 60)) 'aqtest: done' -initrd "$OUT/fuzz/initrd.img" \
+        -append "ip=10.0.2.15/24:10.0.2.2" -netdev user,id=n0 -device e1000,netdev=n0
+
+    if log_problems "$log"; then
+        grep -a 'fuzz: seed' "$log" | tail -1 | sed 's/^/    the last worker: /'
+        return 1
+    fi
+
+    local result
+    result=$(aqtest_result "$log") || { echo "$result"; return 1; }
+
+    grep -a 'fuzz: [0-9]* workers' "$log" | sed 's/^fuzz: //'
 }
 
 # the clock, from each source: the TSC (invariant, QEMU's invtsc), the
@@ -1255,7 +1278,7 @@ needed=" $selected "
 case "$needed" in *" ata "*|*" smp "*) needed="$needed cpu " ;; esac
 [ -x "$CROSS_CC" ] || needed=${needed/ libc / }
 
-for name in cpu syscalls memory oom kvmem clock irq smp net tcp ext2 minix libc aarch64; do
+for name in cpu syscalls memory oom kvmem fuzz clock irq smp net tcp ext2 minix libc aarch64; do
     case "$needed" in
         *" $name "*)
             mkdir -p "$OUT/$name"

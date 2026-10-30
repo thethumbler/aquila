@@ -192,6 +192,20 @@ void aq_main(void)
     mem[8191] = 'z';
     check("mmap: written, read back", mem[0] == 'a' && mem[8191] == 'z', 1);
 
+    /* a large mapping with one page in it: fork() and munmap() go over
+     * its page tables, not its 4 billion pages */
+    struct aquila_mmap_args big = {0, 1UL << 44, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0};
+    check("mmap 16 TiB", SC(SYS_mmap, &big, &m, 0), 0);
+    uint64_t b0 = now_ms();
+    ((volatile char *) m)[12345] = 1;
+    int bc = SC(SYS_fork, 0, 0, 0);
+    if (!bc)
+        SC(SYS_exit, 0, 0, 0);
+    int bst = -1;
+    SC(SYS_waitpid, bc, &bst, 0);
+    check("munmap 16 TiB", SC(SYS_munmap, m, 1UL << 44, 0), 0);
+    check("fork and munmap of 16 TiB with a page in it: quick", now_ms() - b0 < 1000, 1);
+
     /* copies from user memory that fail */
     check("write from a kernel address: EFAULT", SC(SYS_write, con, KADDR, 4), -EFAULT);
     SC(SYS_write, p[1], "x", 1);

@@ -9,7 +9,7 @@ tests/run.sh cpu ext2   # run some tests
 tests/run.sh -n         # reuse the kernel image from the last build
 tests/run.sh -v         # print the serial log of failed tests
 tests/run.sh -a i386    # the i386 kernel and system (default: x86_64)
-tests/run.sh -a aarch64 # the aarch64 kernel on QEMU's virt machine: the aarch64 and oom tests
+tests/run.sh -a aarch64 # the aarch64 kernel on QEMU's virt machine: the aarch64, oom and fuzz tests
 tests/run.sh -C tcc     # the kernel built with tcc (x86; i386's with i386-tcc)
 tests/run.sh -k apic=off    # more for the kernel's command line, every boot
 tests/run.sh -c 4       # QEMU with 4 CPUs, every boot (but the irq and smp tests)
@@ -44,10 +44,11 @@ Build output goes to `tests/out/x86_64` (`tests/out` for i386,
 |------------|----------------|
 | `ata`      | a disk on the first ATA channel is detected, over several boots |
 | `cpu`      | DF and segment registers are sanitized on kernel entry, user exceptions and port I/O raise signals, SSE works, entry stack alignment, the initial stack (argc, argv and envp with their NULLs, the auxiliary vector's page size and entry point) |
-| `syscalls` | kernel addresses are rejected (`EFAULT`), and user memory that isn't mapped (the process goes on, a read's bytes stay, a buffer running into it is used up to it), descriptor and signal checks, wait, threads, pipes (and how fast a ping-pong through them goes: no timer tick waited for), unix sockets, bad ELF files, descriptor flags and close-on-exec, open files shared by `dup` and `fork` (offset, status flags) and kept open by a read waiting on one while its descriptor is closed, symlinks, signal masks, process groups, orphans (init's to wait for; a stopped orphaned group gets `SIGHUP` and `SIGCONT`, the terminal's stops and background reads in one don't stop it), copy-on-write after fork, the `*at()` calls, links, rename, permissions and attributes, paths walked vnode by vnode (`..` after a symbolic link, the cwd and an open directory renamed, `..` through mounts, search permission, a removed cwd, trailing slashes), `SIGPIPE`, `nanosleep`, clocks and `times`; `nanosleep`, `poll` and `select` stopped and continued keep their deadline; signals delivered on the way back to user mode: the SSE state kept across a handler, the handler's signal blocked (`SA_NODEFER`), `sa_mask`, `SA_RESETHAND`, nested handlers, `sigsuspend`, a read stopped and continued made again, a forged `sigreturn` frame |
+| `syscalls` | kernel addresses are rejected (`EFAULT`), and user memory that isn't mapped (the process goes on, a read's bytes stay, a buffer running into it is used up to it), descriptor and signal checks, wait, threads, pipes (and how fast a ping-pong through them goes: no timer tick waited for), unix sockets, bad ELF files, descriptor flags and close-on-exec, open files shared by `dup` and `fork` (offset, status flags) and kept open by a read waiting on one while its descriptor is closed, symlinks, signal masks, process groups, orphans (init's to wait for; a stopped orphaned group gets `SIGHUP` and `SIGCONT`, the terminal's stops and background reads in one don't stop it), copy-on-write after fork, the `*at()` calls, links, rename, permissions and attributes, paths walked vnode by vnode (`..` after a symbolic link, the cwd and an open directory renamed, `..` through mounts, search permission, a removed cwd, trailing slashes), `SIGPIPE`, `nanosleep`, clocks and `times`; `nanosleep`, `poll` and `select` stopped and continued keep their deadline; signals delivered on the way back to user mode: the SSE state kept across a handler, the handler's signal blocked (`SA_NODEFER`), `sa_mask`, `SA_RESETHAND`, nested handlers, `sigsuspend`, a read stopped and continued made again, a forged `sigreturn` frame; and what the fuzz test found: a `sigreturn` frame returning past user space kills (`SIGSEGV`), a thread or a program can't start there, `open()` flags can't make a file pass for a socket, two writers waiting for room in a pipe and two readers waiting on a pseudo-terminal's master don't keep each other (and the kernel) busy, `fork` and `munmap` of a 16 TiB mapping are quick |
 | `memory`   | with 6 GiB of RAM (2 GiB on i386, which uses 768 MiB), one big mapping (1 GiB, 128 MiB on i386) then 4.5 GiB (512 MiB) of anonymous memory filled, every page with where it is, and read back: memory above 4 GiB, the kernel's small objects (slabs) and its hashmaps for millions of pages |
 | `oom`      | out of memory, with 128 MiB: a process maps 1 GiB and touches it all, or `read()`s `/dev/zero` into it; the page fault that finds no memory kills it (`SIGKILL`), three times each, its memory back each time, and `fork` works after (x86 and aarch64) |
-| `aarch64`  | the generic kernel on aarch64 (`-a aarch64`): user mode and `svc` system calls, the PL011 console, fork and copy on write, exec with arguments, pipes, anonymous memory, page faults (`SIGSEGV`), `EFAULT`, a signal handler and sigreturn, the tick, `uname`'s machine, each thread's FP/SIMD registers, and the e1000 on PCI Express (ECAM) pinging QEMU's gateway |
+| `fuzz`     | system calls with bad arguments, for 30 s (x86 and aarch64): init forks workers one after another, each makes 2000 calls chosen at random (sometimes in three threads, half as root, half as user 1000) with arguments that are mostly wrong but plausible: open, closed and out-of-range descriptors, pointers to nothing, to the kernel, to read-only memory, into an unmapped page or past user space, huge lengths, paths that are missing, too long or unterminated, structures full of such values; the kernel survives them, kills every worker that runs out of time, and `fork` works after (`fuzz/init.c`; replaying a worker below) |
+| `aarch64`  | the generic kernel on aarch64 (`-a aarch64`): user mode and `svc` system calls, the PL011 console, fork and copy on write, exec with arguments, pipes, anonymous memory (and `fork` and `munmap` of a 16 TiB mapping, quick), page faults (`SIGSEGV`), `EFAULT`, a signal handler and sigreturn, the tick, `uname`'s machine, each thread's FP/SIMD registers, and the e1000 on PCI Express (ECAM) pinging QEMU's gateway |
 | `kvmem`    | the kernel's allocator: its self-test at boot (`kvmem.test`: objects of many sizes on pages of their own, their guard pages unmapped, none overwriting another, freed out of order and the arena merged back as it was); forks, execs and threads leave no object behind; a write past an object's end faults at its guard page (`kvmem.guard`) |
 | `clock`    | the clock from each of its sources, QEMU's options choosing (`clock=` too): the TSC (invariant), the HPET, the PIT's ticks without an HPET; it never goes back, its resolution (finer than a tick but with the PIT), `nanosleep`, and 2 s as the host counts them (`clock/stamp.py` timestamps the serial lines) |
 | `irq`      | interrupts through the APIC and through the 8259 (`apic=off`): `/proc/interrupts` (the controller, the routes), the timer's 500 ticks a second, the NIC's IRQ when a frame comes: the 82540EM's IRQ 11 (level-triggered under the APIC), the 82574L's MSI (its line with the 8259), on QEMU's pc and q35 |
@@ -65,6 +66,23 @@ Build output goes to `tests/out/x86_64` (`tests/out` for i386,
 
 A test fails on a `FAIL` line, a kernel panic, a guest reset (QEMU runs
 with `-no-reboot`) or if it doesn't finish in time.
+
+## Replaying a fuzz worker
+
+The fuzz test prints each worker's seed before it runs (`fuzz: seed N`),
+and how it ended. After a panic or a hang the last seed is the one: its
+calls come from the seed, so the kernel's command line (`-k`) replays it,
+each call printed before it's made:
+
+```
+tests/run.sh -k "fuzz.seed=169 fuzz.workers=1 fuzz.trace" fuzz
+tests/run.sh -c 4 -k fuzz.secs=600 fuzz     # longer, on four CPUs
+```
+
+`fuzz.calls=N` changes the calls per worker. The calls depend on the
+system's state too (process IDs, timing; with threads, which runs
+first), so a worker alone may not do quite what it did after others:
+a few seeds before it (`fuzz.seed=N-5 fuzz.workers=6`) come closer.
 
 ## Writing a test
 
