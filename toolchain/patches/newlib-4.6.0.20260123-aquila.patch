@@ -13,7 +13,7 @@ diff -ruN a/config.sub b/config.sub
 diff -ruN a/newlib/configure.host b/newlib/configure.host
 --- a/newlib/configure.host
 +++ b/newlib/configure.host
-@@ -592,6 +592,20 @@
+@@ -592,6 +592,23 @@
    z8k-*-coff)
  	sys_dir=z8ksim
  	;;
@@ -30,11 +30,14 @@ diff -ruN a/newlib/configure.host b/newlib/configure.host
 +	newlib_cflags="${newlib_cflags} -D_NO_POSIX_SPAWN"
 +	# malloc only has sbrk
 +	newlib_cflags="${newlib_cflags} -DHAVE_MMAP=0 -DHAVE_MREMAP=0"
++	# pread() and pwrite() are system calls (libc/sys/aquila), not
++	# lseek() and read() or write()
++	newlib_cflags="${newlib_cflags} -D_NO_PREAD -D_NO_PWRITE"
 +	;;
  esac
  
  # Host specific flag settings -- usually for features that are not
-@@ -639,6 +653,10 @@
+@@ -639,6 +656,10 @@
  	newlib_cflags="${newlib_cflags} -DNO_EXEC"
  	syscall_dir=syscalls
  	;;
@@ -233,7 +236,7 @@ diff -ruN a/newlib/libc/include/sys/features.h b/newlib/libc/include/sys/feature
  #if !defined(_POSIX_SOURCE) && !defined(_POSIX_C_SOURCE) && \
    ((!defined(__STRICT_ANSI__) && !defined(_ANSI_SOURCE)) || \
    (defined(_XOPEN_SOURCE) && (_XOPEN_SOURCE - 0) >= 500))
-@@ -440,6 +448,21 @@
+@@ -440,6 +448,24 @@
  #endif
  
  
@@ -242,8 +245,11 @@ diff -ruN a/newlib/libc/include/sys/features.h b/newlib/libc/include/sys/feature
 + * options below), job control included (process groups, sessions) */
 +#define _POSIX_VERSION		200809L
 +#define _POSIX_JOB_CONTROL	1
-+/* clock_gettime(CLOCK_MONOTONIC) */
++/* clock_gettime(CLOCK_MONOTONIC), and clock_nanosleep() */
 +#define _POSIX_MONOTONIC_CLOCK	200809L
++#define _POSIX_CLOCK_SELECTION	200809L
++/* mprotect() */
++#define _POSIX_MEMORY_PROTECTION	200809L
 +/* threads, mutexes (and their types), condition variables, keys
 + * (libc/aquila/pthread.c) */
 +#define _POSIX_THREADS		1

@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sched.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -133,6 +134,16 @@ int unlink(const char *path)
 off_t lseek(int fildes, off_t offset, int whence)
 {
     return SYSCALL(SYS_lseek, fildes, offset, whence);
+}
+
+ssize_t pread(int fildes, void *buf, size_t nbytes, off_t offset)
+{
+    return SYSCALL5(SYS_pread, fildes, buf, nbytes, offset, 0);
+}
+
+ssize_t pwrite(int fildes, const void *buf, size_t nbytes, off_t offset)
+{
+    return SYSCALL5(SYS_pwrite, fildes, buf, nbytes, offset, 0);
 }
 
 int open(const char *path, int oflags, ...)
@@ -334,6 +345,11 @@ int pipe(int fd[2])
     return SYSCALL(SYS_pipe, fd, 0, 0);
 }
 
+int pipe2(int fd[2], int flags)
+{
+    return SYSCALL(SYS_pipe2, fd, flags, 0);
+}
+
 int fcntl(int fildes, int cmd, ...)
 {
     va_list ap;
@@ -351,21 +367,16 @@ int dup(int fildes)
 
 int dup2(int fildes, int fildes2)
 {
+    /* dup3() refuses the same descriptor twice; dup2() checks it's open */
     if (fildes == fildes2)
         return fcntl(fildes, F_GETFD) == -1 ? -1 : fildes2;
 
-    /* F_DUPFD returns the lowest free descriptor >= fildes2 */
-    close(fildes2);
+    return SYSCALL(SYS_dup3, fildes, fildes2, 0);
+}
 
-    int fd = fcntl(fildes, F_DUPFD, fildes2);
-
-    if (fd != -1 && fd != fildes2) {
-        close(fd);
-        errno = EBUSY;
-        return -1;
-    }
-
-    return fd;
+int dup3(int fildes, int fildes2, int flags)
+{
+    return SYSCALL(SYS_dup3, fildes, fildes2, flags);
 }
 
 int fchdir(int fildes)
@@ -530,6 +541,16 @@ int munmap(void *addr, size_t len)
     return SYSCALL(SYS_munmap, addr, len, 0);
 }
 
+int mprotect(void *addr, size_t len, int prot)
+{
+    return SYSCALL(SYS_mprotect, addr, len, prot);
+}
+
+int sched_yield(void)
+{
+    return SYSCALL(SYS_sched_yield, 0, 0, 0);
+}
+
 /* SOCK_NONBLOCK and SOCK_CLOEXEC on a new descriptor */
 static int sock_flags(int fd, int flags)
 {
@@ -549,6 +570,12 @@ int socket(int domain, int type, int protocol)
 {
     int flags = type & (SOCK_NONBLOCK | SOCK_CLOEXEC);
     return sock_flags(SYSCALL(SYS_socket, domain, type & ~flags, protocol), flags);
+}
+
+/* the kernel takes SOCK_NONBLOCK and SOCK_CLOEXEC itself here */
+int socketpair(int domain, int type, int protocol, int fd[2])
+{
+    return SYSCALL5(SYS_socketpair, domain, type, protocol, fd, 0);
 }
 
 int accept(int fd, struct sockaddr *addr, socklen_t *len)

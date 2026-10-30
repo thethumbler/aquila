@@ -28,6 +28,7 @@
 #include <aquila/stat.h>
 #include <aquila/time.h>
 #include <aquila/wait.h>
+#include <aquila/syscall.h>
 
 #define SAME_FIELD(a, b, f) \
     _Static_assert(offsetof(struct a, f) == offsetof(struct b, f) && \
@@ -74,6 +75,7 @@ SAME_FIELD(timespec, aquila_timespec, tv_nsec);
  * them when the C library's headers came first */
 _Static_assert(UTIME_NOW == -2 && UTIME_OMIT == -1, "UTIME_NOW/UTIME_OMIT do not match the kernel");
 _Static_assert(CLOCK_REALTIME == 1 && CLOCK_MONOTONIC == 4, "clock ids do not match the kernel");
+_Static_assert(TIMER_ABSTIME == AQUILA_TIMER_ABSTIME, "TIMER_ABSTIME does not match the kernel");
 
 /* times(2) */
 SAME_SIZE(tms, aquila_tms);

@@ -14,12 +14,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <sys/mman.h>
 
 #include <aquila/syscall.h>
 
 #include "syscall.h"
 
-#define THREAD_STACK_SIZE   8192
+/* a thread's stack, unless pthread_attr_setstacksize() says otherwise;
+ * its pages are only taken once the thread touches them */
+#define THREAD_STACK_SIZE   65536
 
 /* a thread that pthread_create() made, and its stack: the kernel sets
  * `alive` to 0 once the thread is gone and off it. pthread_join() frees
@@ -28,13 +32,47 @@
 struct thread_rec {
     struct thread_rec *next;
     pthread_t tid;
-    void *stack;
+    void *stack;        /* the stack's mapping, guard page included */
+    size_t stack_size;
     volatile int alive;
     int detached;
 };
 
 static struct thread_rec *threads;
 static pthread_mutex_t threads_lock;
+
+/* maps a stack of `size` bytes above a guard page that no access may
+ * touch: a thread that overflows its stack gets SIGSEGV, rather than
+ * writing over what is below it. Sets the record's stack, or returns
+ * ENOMEM */
+static int stack_map(struct thread_rec *rec, size_t size)
+{
+    size_t page = getpagesize();
+
+    size = (size + page - 1) & ~(page - 1);
+
+    char *stack = mmap(NULL, page + size, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    if (stack == MAP_FAILED)
+        return ENOMEM;
+
+    if (mprotect(stack, page, PROT_NONE)) {
+        munmap(stack, page + size);
+        return ENOMEM;
+    }
+
+    rec->stack = stack;
+    rec->stack_size = page + size;
+    return 0;
+}
+
+/* frees a thread's record and its stack */
+static void rec_free(struct thread_rec *rec)
+{
+    munmap(rec->stack, rec->stack_size);
+    free(rec);
+}
 
 /* frees the stacks of the detached threads that are gone (threads_lock
  * held) */
@@ -47,8 +85,7 @@ static void threads_reap(void)
 
         if (rec->detached && !rec->alive) {
             *p = rec->next;
-            free(rec->stack);
-            free(rec);
+            rec_free(rec);
         } else {
             p = &rec->next;
         }
@@ -100,19 +137,20 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
         void *(*start_routine)(void *), void *arg)
 {
     struct thread_rec *rec = calloc(1, sizeof(*rec));
-    char *stack = calloc(1, THREAD_STACK_SIZE);
+    size_t size = attr && attr->stacksize ? attr->stacksize : THREAD_STACK_SIZE;
 
-    if (!rec || !stack) {
+    if (!rec)
+        return ENOMEM;
+
+    if (stack_map(rec, size)) {
         free(rec);
-        free(stack);
         return ENOMEM;
     }
 
-    rec->stack = stack;
     rec->alive = 1;
 
     struct aquila_thread_args args = {
-        .stack  = (uintptr_t) (stack + THREAD_STACK_SIZE),
+        .stack  = (uintptr_t) rec->stack + rec->stack_size,
         .entry  = (uintptr_t) thread_entry,
         .uentry = (uintptr_t) start_routine,
         .arg    = (uintptr_t) arg,
@@ -129,8 +167,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 
     if (tid < 0) {
         pthread_mutex_unlock(&threads_lock);
-        free(stack);
-        free(rec);
+        rec_free(rec);
         return -tid;
     }
 
@@ -167,10 +204,8 @@ int pthread_join(pthread_t thread, void **value_ptr)
     struct thread_rec *rec = threads_find(thread, 1);
     pthread_mutex_unlock(&threads_lock);
 
-    if (rec) {
-        free(rec->stack);
-        free(rec);
-    }
+    if (rec)
+        rec_free(rec);
 
     return 0;
 }

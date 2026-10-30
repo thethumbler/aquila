@@ -1,6 +1,6 @@
 /*
- * Clocks and nanosleep(). newlib's sleep() and usleep() use nanosleep()
- * (HAVE_NANOSLEEP).
+ * Clocks, nanosleep() and clock_nanosleep(). newlib's sleep() and
+ * usleep() use nanosleep() (HAVE_NANOSLEEP).
  */
 
 #include <errno.h>
@@ -13,6 +13,14 @@
 int nanosleep(const struct timespec *req, struct timespec *rem)
 {
     return SYSCALL(SYS_nanosleep, req, rem, 0);
+}
+
+/* POSIX: the error is returned, errno isn't set */
+int clock_nanosleep(clockid_t clock, int flags, const struct timespec *req,
+                    struct timespec *rem)
+{
+    long ret = __syscall5(SYS_clock_nanosleep, clock, flags, (long) req, (long) rem, 0);
+    return ret < 0 ? -ret : 0;
 }
 
 int clock_gettime(clockid_t clock, struct timespec *ts)

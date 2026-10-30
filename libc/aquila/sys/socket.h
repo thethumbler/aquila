@@ -12,8 +12,9 @@ struct sockaddr_storage {
     char __ss_data[124];
 } __attribute__((aligned(8)));
 
-/* socket()'s and accept4()'s flags, or-ed with the type (the C library
- * sets them on the descriptor, as fcntl() does) */
+/* socket()'s, socketpair()'s and accept4()'s flags, or-ed with the type
+ * (the C library sets them on the descriptor, as fcntl() does, but for
+ * socketpair(), whose system call takes them) */
 #define SOCK_NONBLOCK   0x4000      /* O_NONBLOCK */
 #define SOCK_CLOEXEC    0x40000     /* O_CLOEXEC */
 
@@ -56,6 +57,7 @@ struct linger {
 };
 
 int socket(int domain, int type, int protocol);
+int socketpair(int domain, int type, int protocol, int fd[2]);
 int accept(int fd, struct sockaddr *addr, socklen_t *len);
 int bind(int fd, const struct sockaddr *addr, socklen_t len);
 int connect(int fd, const struct sockaddr *addr, socklen_t len);
