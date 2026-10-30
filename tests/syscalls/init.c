@@ -1738,6 +1738,23 @@ static void at_offset(void)
           SC(SYS_lseek, f, 0, SEEK_END) == 20, 1);
     SC(SYS_close, f, 0, 0);
 
+    /* tmpfs keeps a buffer bigger than the file: what a truncation cut
+     * off stays in it, and reads as zeros once the file grows again */
+    f = SC(SYS_open, "/tmp/grow", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    SC(SYS_write, f, "abcdefgh", 8);
+    SC(SYS_ftruncate, f, 2, 0);
+    SC5(SYS_pwrite, f, "Z", 1, 5, 0);
+    for (int i = 0; i < 8; ++i)
+        b[i] = 'x';
+    check("tmpfs: a write past the end, zeros before it", SC5(SYS_pread, f, b, 8, 0, 0) == 6 &&
+          b[0] == 'a' && b[1] == 'b' && b[2] == 0 && b[3] == 0 && b[4] == 0 && b[5] == 'Z', 1);
+    SC(SYS_ftruncate, f, 1, 0);
+    SC(SYS_ftruncate, f, 6, 0);
+    check("tmpfs: a truncation that grows the file, zeros", SC5(SYS_pread, f, b, 8, 0, 0) == 6 &&
+          b[0] == 'a' && b[1] == 0 && b[5] == 0, 1);
+    SC(SYS_close, f, 0, 0);
+    SC(SYS_unlink, "/tmp/grow", 0, 0);
+
     f = SC(SYS_open, "/tmp/at", O_WRONLY, 0);
     check("pread write-only", SC5(SYS_pread, f, b, 1, 0, 0), -EBADF);
     SC(SYS_close, f, 0, 0);

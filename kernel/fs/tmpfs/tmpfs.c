@@ -3,8 +3,10 @@
  *
  * Its vnodes are its inodes: each lives in memory as long as it has a
  * name or a reference, and its inode number is its address. A file's
- * data is one buffer of its size. The directories are pseudofs's
- * (`fs/pseudofs/`), which devfs and devpts share.
+ * data is one buffer, a bit bigger than the file (`tmpfs_cap()`), so that
+ * a file written a piece at a time isn't copied at every write. The
+ * directories are pseudofs's (`fs/pseudofs/`), which devfs and devpts
+ * share.
  */
 
 #include <core/system.h>
@@ -45,6 +47,21 @@ static int tmpfs_close(struct vnode *vnode)
     return 0;
 }
 
+/** Returns how big a file's buffer is for a file of `size` bytes: the
+ * first of 64, 96, 144, ... (half as big again each time) that holds it.
+ * Growing it to the next one copies the file, which happens less and less
+ * often as the file grows. (It depends on the size alone: the buffer is
+ * at least this big, whatever sizes the file had before.) */
+static size_t tmpfs_cap(size_t size)
+{
+    size_t cap = 64;
+
+    while (cap < size && cap < (size_t) -1 / 2)
+        cap += cap / 2;
+
+    return cap < size ? size : cap;
+}
+
 /** Reads a file's data from its buffer. */
 static ssize_t tmpfs_read(struct vnode *node, off_t offset, struct iobuf *io)
 {
@@ -70,20 +87,27 @@ static ssize_t tmpfs_write(struct vnode *node, off_t offset, struct iobuf *io)
     if ((size_t) offset + size < (size_t) offset)
         return -EFBIG;
 
-    if (((size_t) offset + size) > node->size) {    /* a bigger buffer */
-        size_t sz = (size_t) offset + size;
+    size_t end = (size_t) offset + size;
 
-        /* zeroed, so that a gap between the old size and the offset
-         * reads as zeros */
-        void *new = kmalloc(sz, &M_BUFFER, M_ZERO);
-        if (!new)
-            return -ENOMEM;
+    if (end > node->size) {
+        if (!node->p || tmpfs_cap(end) > tmpfs_cap(node->size)) {
+            /* a bigger buffer, zeroed, so that a gap between the old size
+             * and the offset reads as zeros */
+            void *new = kmalloc(tmpfs_cap(end), &M_BUFFER, M_ZERO);
+            if (!new)
+                return -ENOMEM;
 
-        if (node->p)
-            memcpy(new, node->p, node->size);
-        kfree(node->p);
-        node->p = new;
-        node->size = sz;
+            if (node->p)
+                memcpy(new, node->p, node->size);
+            kfree(node->p);
+            node->p = new;
+        } else {
+            /* the buffer has room: what is between the old end and the
+             * offset may be left from a truncation, it reads as zeros */
+            memset((char *) node->p + node->size, 0, end - node->size);
+        }
+
+        node->size = end;
     }
 
     ssize_t r = iobuf_in(io, (char *) node->p + offset, size);
@@ -113,13 +137,25 @@ static int tmpfs_trunc(struct vnode *vnode, off_t len)
     }
 
     size_t sz = MIN((size_t) len, vnode->size);
-    char *buf = kmalloc(len, &M_BUFFER, 0);
+
+    /* within the buffer, as it is: what is past the end now reads as
+     * zeros when the file grows into it again (tmpfs_write() clears it) */
+    if (vnode->p && tmpfs_cap(len) == tmpfs_cap(vnode->size)) {
+        if ((size_t) len > vnode->size)
+            memset((char *) vnode->p + vnode->size, 0, len - vnode->size);
+
+        vnode->size = len;
+        return 0;
+    }
+
+    char *buf = kmalloc(tmpfs_cap(len), &M_BUFFER, 0);
 
     /* with no memory, the file stays as it was */
     if (!buf)
         return -ENOMEM;
 
-    memcpy(buf, vnode->p, sz);
+    if (vnode->p)
+        memcpy(buf, vnode->p, sz);
 
     if ((size_t) len > vnode->size)
         memset(buf + vnode->size, 0, len - vnode->size);
