@@ -312,6 +312,7 @@ netcat, runit and Freedoom: BSD; kilo: BSD 2-Clause; sbase, sdhcp, Lua,
 libtermkey, expat, dwm, st, dmenu and JWM: MIT; ncurses, xterm, curl,
 fontconfig and the X.Org libraries: MIT-style; X.Org's misc and cursor
 fonts: public domain; vis: ISC; zlib: zlib; FreeType: FreeType License
-or GPLv2; DejaVu fonts: Bitstream Vera; IBM Plex Sans: SIL Open Font License 1.1; Mbed TLS: Apache 2.0 or GPLv2
+or GPLv2; DejaVu fonts: Bitstream Vera; IBM Plex Sans: SIL Open Font License 1.1;
+libjpeg: the IJG License; Mbed TLS: Apache 2.0 or GPLv2
 (or later); tcc: LGPLv2.1; bash: GPLv3; TinyX: GPLv3; UnixBench and
 doomgeneric: GPLv2; Microwindows: MPL 1.1 or GPLv2.

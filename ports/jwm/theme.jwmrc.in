@@ -73,6 +73,6 @@
     </ClockStyle>
 
     <Desktops width="4" height="1">
-        <Background type="scale">/usr/share/aquila/wallpaper-@theme@.xpm</Background>
+        <Background type="image">/usr/share/aquila/wallpaper.jpg</Background>
     </Desktops>
 </JWM>

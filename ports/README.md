@@ -83,10 +83,11 @@ host's `/usr/lib`.
 | fontconfig | 2.15.0   | library, `/etc/fonts`, and `fc-cache`, `fc-list` and `fc-match` in `/usr/bin` |
 | freedoom   | 0.13.0   | `/usr/share/games/doom/freedoom1.wad` (28 MB): Freedoom: Phase 1, free (BSD) game data for Doom |
 | freetype   | 2.13.3   | library only (the font rasterizer)                  |
-| jwm        | 2.3.7    | `jwm` in `/usr/bin`, the desktop that `startx` starts: title bars, a taskbar (the menu, the desktops, the windows, a clock), a wallpaper. `/etc/system.jwmrc`, its themes in aquilaos.com's palette in `/usr/share/aquila`, and `aquila-theme`, which switches between them (dark and light) and opens terminals in them. 2.3: from 2.4 on, JWM draws antialiased text only through Pango |
+| jwm        | 2.3.7    | `jwm` in `/usr/bin`, the desktop that `startx` starts: title bars, a taskbar (the menu, the desktops, the windows, a clock), the wallpaper (`ports/jwm/wallpaper.jpg`). `/etc/system.jwmrc`, its themes in aquilaos.com's palette in `/usr/share/aquila`, and `aquila-theme`, which switches between them (dark and light) and opens terminals in them. 2.3: from 2.4 on, JWM draws antialiased text only through Pango |
 | kilo       | 323d93b  | `kilo` in `/usr/bin`                                |
 | libfontenc | 1.1.8    | library only (for libXfont)                         |
 | libice     | 1.1.2    | library only (for libSM)                            |
+| libjpeg    | 9f       | library only (JPEG images, for JWM's wallpaper)      |
 | libpthread-stubs | 0.5 | `pthread-stubs.pc` only (the pthread functions are in the C library), for libxcb |
 | libsm      | 1.2.6    | library only (session management, for Xt)           |
 | libtermkey | 0.22     | library only (for vis)                              |

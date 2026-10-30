@@ -1,9 +1,9 @@
 #!/bin/sh
 #
 # logo-xpm: AquilaOS's logo, the 8x8 "A" of aquilaos.com's favicon, as an
-# XPM image: <width>x<height> pixels of <background>, the logo in the
-# middle in <colour>, each of its pixels <scale> pixels wide. Run on the
-# build host by the recipe.
+# XPM image (the menu's icon): <width>x<height> pixels of <background>,
+# the logo in the middle in <colour>, each of its pixels <scale> pixels
+# wide. Run on the build host by the recipe.
 #
 # usage: logo-xpm <name> <width> <height> <scale> <background> <colour>
 #
