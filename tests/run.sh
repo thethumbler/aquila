@@ -855,7 +855,9 @@ PY
 
 # file reads and writes, timed (tests/fscache/init.c): an ext2 disk with
 # 4 KiB blocks (128 MiB) and tmpfs; a file read again comes from the page
-# cache, tmpfs writes don't copy the file each time
+# cache, tmpfs writes don't copy the file each time; then, in 64 MiB, a
+# 96 MiB file mapped and read through (the page cache takes back mapped
+# pages)
 test_fscache()
 {
     local img=$OUT/fscache/disk.img
@@ -874,6 +876,13 @@ test_fscache()
 
     local result
     result=$(aqtest_result "$log") || { echo "$result"; return 1; }
+
+    # in 64 MiB, a 96 MiB file mapped and read through
+    local plog=$OUT/fscache/pressure.log presult
+    mke2fs -q -t ext2 -b 4096 -F "$img" 128M || return 1
+    QEMU_MEM=64 run_qemu "$plog" 180 'aqtest: done' -initrd "$OUT/fscache/initrd.img" \
+        -drive file="$img",format=raw,index=0,media=disk -append "fscache.pressure"
+    presult=$(aqtest_result "$plog") || { echo "pressure: $presult"; return 1; }
 
     # the numbers, in MB/s
     local n
