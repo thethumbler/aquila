@@ -1,5 +1,7 @@
 /*
- * Minimal pthreads on top of the kernel thread syscalls. Mutexes are
+ * Minimal pthreads on top of the kernel thread syscalls. Each thread has
+ * its own signal mask, and can be sent a signal (pthread_kill()); a
+ * detached thread is freed by the kernel when it exits. Mutexes are
  * locks a waiter polls (nanosleep), condition variables wake up their
  * waiters after a moment (spurious wakeups, which POSIX allows: callers
  * check their condition again); mutexes aren't recursive whatever their
@@ -18,6 +20,58 @@
 #include "syscall.h"
 
 #define THREAD_STACK_SIZE   8192
+
+/* a thread that pthread_create() made, and its stack: the kernel sets
+ * `alive` to 0 once the thread is gone and off it. pthread_join() frees
+ * it; a detached thread's is freed by the next pthread_create() that
+ * finds it gone */
+struct thread_rec {
+    struct thread_rec *next;
+    pthread_t tid;
+    void *stack;
+    volatile int alive;
+    int detached;
+};
+
+static struct thread_rec *threads;
+static pthread_mutex_t threads_lock;
+
+/* frees the stacks of the detached threads that are gone (threads_lock
+ * held) */
+static void threads_reap(void)
+{
+    struct thread_rec **p = &threads;
+
+    while (*p) {
+        struct thread_rec *rec = *p;
+
+        if (rec->detached && !rec->alive) {
+            *p = rec->next;
+            free(rec->stack);
+            free(rec);
+        } else {
+            p = &rec->next;
+        }
+    }
+}
+
+/* finds a thread's record, and takes it off the list if `take`
+ * (threads_lock held) */
+static struct thread_rec *threads_find(pthread_t tid, int take)
+{
+    for (struct thread_rec **p = &threads; *p; p = &(*p)->next) {
+        struct thread_rec *rec = *p;
+
+        if (rec->tid == tid) {
+            if (take)
+                *p = rec->next;
+
+            return rec;
+        }
+    }
+
+    return NULL;
+}
 
 /* called by the kernel on the new thread's stack (through thread_entry
  * on x86-64, which can't call a static function) */
@@ -45,10 +99,17 @@ asm(".type thread_entry, @function\n"
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
         void *(*start_routine)(void *), void *arg)
 {
+    struct thread_rec *rec = calloc(1, sizeof(*rec));
     char *stack = calloc(1, THREAD_STACK_SIZE);
 
-    if (!stack)
+    if (!rec || !stack) {
+        free(rec);
+        free(stack);
         return ENOMEM;
+    }
+
+    rec->stack = stack;
+    rec->alive = 1;
 
     struct aquila_thread_args args = {
         .stack  = (uintptr_t) (stack + THREAD_STACK_SIZE),
@@ -56,16 +117,33 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
         .uentry = (uintptr_t) start_routine,
         .arg    = (uintptr_t) arg,
         .attr   = (uintptr_t) attr,
+        .alive  = (uintptr_t) &rec->alive,
     };
+
+    /* held until the record is on the list: the new thread may detach
+     * itself right away */
+    pthread_mutex_lock(&threads_lock);
+    threads_reap();
 
     long tid = __syscall(SYS_thread_create, (long) &args, 0, 0);
 
     if (tid < 0) {
+        pthread_mutex_unlock(&threads_lock);
         free(stack);
+        free(rec);
         return -tid;
     }
 
+    rec->tid = tid;
+    rec->next = threads;
+    threads = rec;
+    pthread_mutex_unlock(&threads_lock);
+
     *thread = tid;
+
+    if (attr && attr->detachstate == PTHREAD_CREATE_DETACHED)
+        pthread_detach(tid);
+
     return 0;
 }
 
@@ -80,7 +158,21 @@ void pthread_exit(void *value_ptr)
 int pthread_join(pthread_t thread, void **value_ptr)
 {
     long ret = __syscall(SYS_thread_join, thread, (long) value_ptr, 0);
-    return ret < 0 ? -ret : 0;
+
+    if (ret < 0)
+        return -ret;
+
+    /* it's gone: its stack can go too */
+    pthread_mutex_lock(&threads_lock);
+    struct thread_rec *rec = threads_find(thread, 1);
+    pthread_mutex_unlock(&threads_lock);
+
+    if (rec) {
+        free(rec->stack);
+        free(rec);
+    }
+
+    return 0;
 }
 
 pthread_t pthread_self(void)
@@ -93,16 +185,36 @@ int pthread_equal(pthread_t t1, pthread_t t2)
     return t1 == t2;
 }
 
-/* threads aren't kept for pthread_join() longer than needed anyway */
 int pthread_detach(pthread_t thread)
 {
-    (void) thread;
+    long ret = __syscall(SYS_thread_detach, thread, 0, 0);
+
+    if (ret < 0)
+        return -ret;
+
+    /* its stack is freed once it's gone, maybe already */
+    pthread_mutex_lock(&threads_lock);
+    struct thread_rec *rec = threads_find(thread, 0);
+
+    if (rec)
+        rec->detached = 1;
+
+    threads_reap();
+    pthread_mutex_unlock(&threads_lock);
     return 0;
 }
 
+/* the mask is the calling thread's, as sigprocmask()'s */
 int pthread_sigmask(int how, const sigset_t *set, sigset_t *oset)
 {
-    return sigprocmask(how, set, oset) < 0 ? errno : 0;
+    long ret = __syscall(SYS_sigmask, how, (long) set, (long) oset);
+    return ret < 0 ? -ret : 0;
+}
+
+int pthread_kill(pthread_t thread, int sig)
+{
+    long ret = __syscall(SYS_thread_kill, thread, sig, 0);
+    return ret < 0 ? -ret : 0;
 }
 
 int pthread_attr_init(pthread_attr_t *attr)

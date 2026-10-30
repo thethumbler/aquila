@@ -224,6 +224,39 @@ int sigprocmask(int how, const sigset_t *set, sigset_t *oldset)
     return SYSCALL(SYS_sigmask, how, set, oldset);
 }
 
+int sigpending(sigset_t *set)
+{
+    return SYSCALL(SYS_sigpending, set, 0, 0);
+}
+
+/* the signal taken, without running its handler; EAGAIN once the time is
+ * up */
+int sigtimedwait(const sigset_t *set, siginfo_t *info, const struct timespec *timeout)
+{
+    return SYSCALL(SYS_sigtimedwait, set, info, timeout);
+}
+
+int sigwaitinfo(const sigset_t *set, siginfo_t *info)
+{
+    return sigtimedwait(set, info, NULL);
+}
+
+/* the error number, not -1 and errno, as the pthread functions */
+int sigwait(const sigset_t *set, int *sig)
+{
+    long ret;
+
+    /* it isn't ended by another signal's handler (POSIX: no EINTR) */
+    while ((ret = __syscall(SYS_sigtimedwait, (long) set, 0, 0)) == -EINTR)
+        ;
+
+    if (ret < 0)
+        return -ret;
+
+    *sig = ret;
+    return 0;
+}
+
 int sigsuspend(const sigset_t *mask)
 {
     /* always fails with EINTR once a signal handler ran */
