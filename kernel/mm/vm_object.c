@@ -8,6 +8,7 @@
 #include <core/arch.h>
 #include <core/panic.h>
 #include <mm/mm.h>
+#include <mm/pmap.h>
 #include <mm/vm.h>
 #include <ds/queue.h>
 #include <ds/hashmap.h>
@@ -39,6 +40,62 @@ void vm_object_decref(struct vm_object *vm_object)
 {
     if (!--vm_object->ref && vm_object->type == VMOBJ_FILE)
         vfs_close((struct vnode *) vm_object->p);
+}
+
+/**
+ * Makes a map entry a mapping of a vm object: the entry holds a
+ * reference to it (`vm_object_incref()`), and goes on the object's list
+ * of mappings, through which its pages are found in page tables
+ * (`vm_object_page_unmap()`). The entry's `vm_space` must be set.
+ *
+ * @param vm_object  the object
+ * @param vm_entry   the entry, which isn't on a list of mappings
+ */
+void vm_object_map(struct vm_object *vm_object, struct vm_entry *vm_entry)
+{
+    vm_entry->vm_object = vm_object;
+    vm_entry->obj_link = (struct list_node) {0};
+    list_append(&vm_object->mappings, &vm_entry->obj_link);
+    vm_object_incref(vm_object);
+}
+
+/**
+ * Undoes `vm_object_map()`: the entry leaves the object's list of
+ * mappings, and drops its reference.
+ *
+ * @param vm_object  the object
+ * @param vm_entry   the entry
+ */
+void vm_object_unmap(struct vm_object *vm_object, struct vm_entry *vm_entry)
+{
+    list_remove(&vm_entry->obj_link);
+    vm_object_decref(vm_object);
+}
+
+/**
+ * Takes a page of a vm object out of the page tables that map it, so that
+ * it can be freed: each mapping of the object that covers the page's
+ * offset has its page table entry there removed, if it is this page (a
+ * private mapping may have its own copy there, which stays). A process
+ * that touches the address again faults, and gets the page read in again.
+ *
+ * @param vm_object  the object
+ * @param vm_page    its page
+ */
+void vm_object_page_unmap(struct vm_object *vm_object, struct vm_page *vm_page)
+{
+    list_for (node, &vm_object->mappings) {
+        struct vm_entry *vm_entry = list_entry(node, struct vm_entry, obj_link);
+
+        if (vm_page->off < vm_entry->off || vm_page->off - vm_entry->off >= vm_entry->size)
+            continue;
+
+        struct pmap *pmap = vm_entry->vm_space->pmap;
+        vaddr_t vaddr = vm_entry->base + (vm_page->off - vm_entry->off);
+
+        if (PAGE_ALIGN(arch_page_get_mapping(pmap, vaddr)) == vm_page->paddr)
+            pmap_remove(pmap, vaddr, vaddr + PAGE_SIZE);
+    }
 }
 
 /**

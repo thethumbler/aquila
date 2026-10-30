@@ -173,8 +173,10 @@ int vm_space_split(struct vm_space *vm_space, struct vm_entry *vm_entry, vaddr_t
     right->vm_anon = right_anon;
     right->qnode   = node;
 
+    right->vm_space = vm_space;
+
     if (right->vm_object)
-        vm_object_incref(right->vm_object);
+        vm_object_map(right->vm_object, right);
 
     vm_entry->size = delta;
 
@@ -262,9 +264,10 @@ static int vm_space_covers(struct vm_space *vm_space, vaddr_t start, vaddr_t end
  * @param start     the range's start, on a page
  * @param end       its end, on a page
  * @param perm      the user permissions (`VM_UR`, `VM_UW`, `VM_UX`)
- * @return 0, or `-ENOMEM` if a page of the range isn't mapped (nothing
+ * @return 0, `-ENOMEM` if a page of the range isn't mapped (nothing
  *         changes then), or if there was no memory to split an entry or
- *         for a page table of device memory
+ *         for a page table of device memory, or `-EACCES` to make a
+ *         file's shared mapping writable
  */
 int vm_space_protect(struct vm_space *vm_space, vaddr_t start, vaddr_t end, uint32_t perm)
 {
@@ -272,6 +275,17 @@ int vm_space_protect(struct vm_space *vm_space, vaddr_t start, vaddr_t end, uint
 
     if (!vm_space_covers(vm_space, start, end))
         return -ENOMEM;
+
+    /* a file's shared mapping can't be written to: what's written isn't
+     * written back to the file yet */
+    queue_for (node, &vm_space->vm_entries) {
+        struct vm_entry *vm_entry = node->value;
+        vaddr_t eva = vm_entry->base + vm_entry->size;
+
+        if (vm_entry->size && eva > start && vm_entry->base < end && (perm & VM_UW) &&
+            (vm_entry->flags & VM_SHARED) && vm_entry->vm_object && !vm_entry->paddr)
+            return -EACCES;
+    }
 
     if ((err = vm_space_cut(vm_space, start, end)))
         return err;
@@ -401,9 +415,11 @@ int vm_space_fork(struct vm_space *src, struct vm_space *dst)
             vm_anon_incref(s_entry->vm_anon);
         }
 
-        if (s_entry->vm_object) {
-            vm_object_incref(s_entry->vm_object);
-        }
+        /* the child's entry maps the same object, in its own space */
+        d_entry->vm_space = dst;
+
+        if (s_entry->vm_object)
+            vm_object_map(s_entry->vm_object, d_entry);
 
         if (s_entry->flags & (VM_UW|VM_KW) && !(s_entry->flags & VM_SHARED)) {
             /* make the parent's pages read-only: the first write copies */

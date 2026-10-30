@@ -9,9 +9,9 @@
  * The pages stay as long as there is memory for them. Every cached page
  * is on one list, the page used least recently first; when no page of
  * memory is left, `mm_page_alloc()` takes back the oldest ones
- * (`vm_cache_reclaim()`). Only the pages of files that nothing maps are
- * taken back: a mapped page may be in a process's page tables, and
- * nothing says which.
+ * (`vm_cache_reclaim()`). A page that is mapped is taken out of the page
+ * tables of the processes that map it first: the file's vm object knows
+ * its mappings (`vm_object_page_unmap()`).
  *
  * Writes go to the filesystem, which writes them through the disks'
  * block cache, and the cached pages are read again from it
@@ -279,8 +279,8 @@ ssize_t vm_cache_read(struct vnode *vnode, off_t off, struct iobuf *io)
 
 /**
  * Takes back memory from the page cache: frees pages, the ones used
- * least recently first, of files that nothing maps. `mm_page_alloc()`
- * calls it when there is no page of memory left.
+ * least recently first, taking them out of the page tables that map them.
+ * `mm_page_alloc()` calls it when there is no page of memory left.
  *
  * @param want  how many pages to free
  * @return how many were freed
@@ -296,9 +296,14 @@ size_t vm_cache_reclaim(size_t want)
         struct vm_page *vm_page = list_entry(node, struct vm_page, lru);
         struct vm_object *vm_object = vm_page->vm_object;
 
-        /* mapped: the page may be in a process's page tables */
-        if (vm_object->ref)
+        /* a fault is mapping it */
+        if (vm_page->pin)
             continue;
+
+        /* mapped: out of the page tables first, a process that touches
+         * it again reads it in again */
+        if (vm_object->ref)
+            vm_object_page_unmap(vm_object, vm_page);
 
         size_t off = vm_page->off;
         hash_t hash = hashmap_digest(&off, sizeof(off));

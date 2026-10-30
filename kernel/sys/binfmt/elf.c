@@ -121,15 +121,16 @@ static int binfmt_elf_load_segments(struct proc *proc, struct vnode *vnode)
                 goto e_nomem;
             }
 
-            vm_entry->vm_object = vm_object_vnode(vnode);
+            struct vm_object *vm_object = vm_object_vnode(vnode);
 
-            if (!vm_entry->vm_object)
+            if (!vm_object)
                 goto e_nomem;
 
             if (vm_entry->flags & VM_UW)
                 vm_entry->flags |= VM_COPY;
 
-            vm_object_incref(vm_entry->vm_object);
+            vm_entry->vm_space = vm_space;
+            vm_object_map(vm_object, vm_entry);
 
             if (base + memsz > proc_heap)
                 proc_heap = base + memsz;

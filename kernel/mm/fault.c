@@ -238,28 +238,12 @@ static inline int vm_object_page(struct vm_object *vm_object, hash_t hash, size_
     return -EIO;
 }
 
-/**
- * Handles a fault on a page of the object the mapping is of (a file's
- * page). A read-only mapping maps the object's page itself. A writable
- * one gets a copy, in the process's anon: what it writes is its own.
- *
- * Returns 1 if the fault is handled, or a negative errno (`-ENOMEM` if
- * there was no memory to read the page in, `-EIO` if it couldn't be
- * read).
- */
-static inline int pf_object(struct pf *pf)
+/** Maps an object's page, or a copy of it, for `pf_object()`. */
+static inline int pf_object_page(struct pf *pf, struct vm_page *vm_page)
 {
     struct vm_entry *vm_entry = pf->vm_entry;
-
-    struct vm_object *vm_object = vm_entry->vm_object;
-    struct vm_page *vm_page = NULL;
     struct pmap *pmap = pf->vm_space->pmap;
-
-    /* the object's page, read in if needed */
-    int err = vm_object_page(vm_object, pf->hash, pf->off, &vm_page);
-
-    if (err)
-        return err;
+    int err;
 
     if (!(vm_entry->flags & VM_UW)) {
         /* a read-only mapping: map the object's page */
@@ -316,6 +300,36 @@ static inline int pf_object(struct pf *pf)
     err = mm_page_map(pmap, pf->addr, new_page->paddr, vm_entry->flags & VM_PERM);
 
     return err ? err : 1;
+}
+
+/**
+ * Handles a fault on a page of the object the mapping is of (a file's
+ * page). A read-only mapping maps the object's page itself. A writable
+ * one gets a copy, in the process's anon: what it writes is its own.
+ *
+ * The page is pinned meanwhile: mapping it, or copying it, may need
+ * memory, and the page cache, giving memory back, mustn't take this page.
+ *
+ * Returns 1 if the fault is handled, or a negative errno (`-ENOMEM` if
+ * there was no memory to read the page in, `-EIO` if it couldn't be
+ * read).
+ */
+static inline int pf_object(struct pf *pf)
+{
+    struct vm_object *vm_object = pf->vm_entry->vm_object;
+    struct vm_page *vm_page = NULL;
+
+    /* the object's page, read in if needed */
+    int err = vm_object_page(vm_object, pf->hash, pf->off, &vm_page);
+
+    if (err)
+        return err;
+
+    vm_page->pin++;
+    err = pf_object_page(pf, vm_page);
+    vm_page->pin--;
+
+    return err;
 }
 
 /**

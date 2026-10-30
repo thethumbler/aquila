@@ -89,6 +89,12 @@ struct vm_entry {
 
     /** its node in its address space's list of mappings */
     struct qnode *qnode;
+
+    /** its address space, whose page tables map its pages */
+    struct vm_space *vm_space;
+
+    /** its place on its object's list of mappings (`vm_object_map()`) */
+    struct list_node obj_link;
 };
 
 /** A vm object's pager: reads its pages in, and writes them out. */
@@ -149,6 +155,10 @@ struct vm_object {
 
     /** where a sequential read would read in next, for read-ahead */
     size_t ra_next;
+
+    /** the map entries that map it, in any address space: how its pages
+     *  are found in page tables (a reverse map, Linux's i_mmap) */
+    struct list mappings;
 };
 
 /** A page of physical memory (pages[] has one for every page of RAM). */
@@ -164,6 +174,10 @@ struct vm_page {
     /** a file's page: its place on the page cache's list, the page used
      *  least recently first */
     struct list_node lru;
+
+    /** a file's page: how many are using it (a fault mapping it), which
+     *  the page cache doesn't take back meanwhile */
+    unsigned pin;
 };
 
 /* The kernel's address space. */
@@ -210,5 +224,8 @@ size_t vm_cache_pages(void);
 int  vm_object_page_insert(struct vm_object *vm_object, struct vm_page *vm_page);
 void vm_object_incref(struct vm_object *vm_object);
 void vm_object_decref(struct vm_object *vm_object);
+void vm_object_map(struct vm_object *vm_object, struct vm_entry *vm_entry);
+void vm_object_unmap(struct vm_object *vm_object, struct vm_entry *vm_entry);
+void vm_object_page_unmap(struct vm_object *vm_object, struct vm_page *vm_page);
 
 #endif  /* ! _MM_VM_H */

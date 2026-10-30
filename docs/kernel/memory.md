@@ -218,9 +218,9 @@ This is the design of the BSDs' UVM (Chuck Cranor's), smaller: a
 - **`sbrk()`** grows or shrinks the heap region, up to the next region.
   The new pages are zero-filled at their first use.
 - **`mmap()`** adds a region: a file's (`MAP_PRIVATE`: its pages are
-  copied when written), a device's (`MAP_SHARED` on a device: the
-  framebuffer maps its memory into the process, `kdev_map()`), or
-  anonymous memory. Without `MAP_FIXED` it goes in the highest gap that
+  copied when written; `MAP_SHARED`: its pages themselves, read only for
+  now), a device's (`MAP_SHARED` on a device: the framebuffer maps its
+  memory into the process, `kdev_map()`), or anonymous memory. Without `MAP_FIXED` it goes in the highest gap that
   fits, which is right below the sigcode page and the stack. A file's
   offset must be on a page.
 - **`mprotect()`** changes the permissions of a range
@@ -255,8 +255,8 @@ whole, and `munmap()` not at all (`EINVAL`, where Linux allows both). Two
 parts of a region that get the same permissions again stay two regions.
 `MAP_FIXED` can't replace a mapping that's there; anonymous memory can't
 be `MAP_SHARED` (it would need a page shared between processes that
-`fork()` doesn't copy); a regular file can't be mapped `MAP_SHARED` (no
-filesystem implements it, so writes would never reach the file). Regions
+`fork()` doesn't copy); a regular file's `MAP_SHARED` mapping can't be
+written to (what's written isn't written back to the file yet). Regions
 are a list, searched from the start at each fault: fine for the few
 regions a program has here.
 

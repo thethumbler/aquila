@@ -304,10 +304,10 @@ serve every use of the file:
   a page is read in the first time a process touches it
   (`vnode_page_in()`, the vnode pager's, called from the page fault
   handler, see [Memory](memory.md)). Private mappings (`MAP_PRIVATE`, and
-  a program's segments) get a copy of a page when they write to it.
-  Shared mappings need the filesystem's `map` operation, which only
-  devices have (the framebuffer): `MAP_SHARED` on a regular file isn't
-  supported.
+  a program's segments) get a copy of a page when they write to it. A
+  shared mapping (`MAP_SHARED`) of a regular file maps the same pages, and
+  can't be written to yet; a device's shared mapping is its driver's (the
+  framebuffer's, through the filesystem's `map` operation).
 
 Other files (tmpfs's, procfs's, the initramfs's) are read through their
 filesystem each time: they are in memory already, or made up when read.
@@ -321,11 +321,15 @@ on one list, the page used least recently first. When the buddy allocator
 has no page left, `mm_page_alloc()` takes some back
 (`vm_cache_reclaim()`), the oldest first, and tries again: the page cache
 uses the memory nobody else does, and gives it back when it's needed.
-Only the pages of files that nothing maps are taken back: a mapped page
-may be in a process's page tables, and nothing says which (there is no
-reverse map from a page to the mappings of it), so a mapped file keeps
-all its pages until its last mapping goes. `/proc/meminfo`'s `Cached` is
-how much memory the page cache has.
+A page that processes map is taken out of their page tables first: a
+file's vm object keeps the list of the map entries that map it, in any
+address space (`vm_object_map()`; Linux's `i_mmap`, a reverse map by file
+rather than by page), and each that covers the page's offset has its page
+table entry there removed, if it maps this page and not a private copy
+(`vm_object_page_unmap()`). A process that touches it again faults, and
+the page is read in again. A page a fault is mapping is pinned
+(`vm_page->pin`) meanwhile. `/proc/meminfo`'s `Cached` is how much memory
+the page cache has.
 
 ## Caching and writing to disk
 

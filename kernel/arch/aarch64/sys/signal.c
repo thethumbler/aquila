@@ -120,7 +120,7 @@ int arch_sigcode_map(struct proc *proc)
     vm_entry->base  = SIGCODE_ADDR;
     vm_entry->size  = PAGE_SIZE;
     vm_entry->flags = VM_URX;
-    vm_entry->vm_object = &sigcode_object;
+    vm_entry->vm_space = &proc->vm_space;
 
     int err = vm_space_insert(&proc->vm_space, vm_entry);
 
@@ -129,7 +129,7 @@ int arch_sigcode_map(struct proc *proc)
         return err;
     }
 
-    vm_object_incref(&sigcode_object);
+    vm_object_map(&sigcode_object, vm_entry);
     return 0;
 }
 

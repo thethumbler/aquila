@@ -38,5 +38,5 @@ void vm_entry_destroy(struct vm_entry *vm_entry)
         vm_anon_decref(vm_entry->vm_anon);
 
     if (vm_entry->vm_object)
-        vm_object_decref(vm_entry->vm_object);
+        vm_object_unmap(vm_entry->vm_object, vm_entry);
 }

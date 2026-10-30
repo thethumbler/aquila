@@ -615,6 +615,15 @@ long sys_mmap(struct aquila_mmap_args *uargs, void **ret)
         return -ENODEV;
     }
 
+    /* a regular file's pages are its own (the page cache's), shared or
+     * not; another file (a device) is mapped by its driver */
+    int regular = file && !ISDEV(file->vnode) && S_ISREG(file->vnode->mode);
+
+    /* a file's changes made through a mapping aren't written back yet */
+    if (regular && (args->flags & MAP_SHARED) && (args->prot & PROT_WRITE)) {
+        return -ENOSYS;
+    }
+
     if (!args->len) {
         return -EINVAL;
     }
@@ -649,25 +658,28 @@ long sys_mmap(struct aquila_mmap_args *uargs, void **ret)
     vm_entry->flags |= args->flags & MAP_SHARED ? VM_SHARED : 0;
     vm_entry->off    = anon ? 0 : args->off;
 
+    struct vm_space *vm_space = &curproc->vm_space;
+    vm_entry->vm_space = vm_space;
+
     /* without an object, pages are zero-filled when first touched */
-    vm_entry->vm_object = anon ? NULL : vm_object_vnode(file->vnode);
+    if (!anon) {
+        struct vm_object *vm_object = vm_object_vnode(file->vnode);
 
-    if (!anon && !vm_entry->vm_object) {
-        err = -ENOMEM;
-        goto error;
+        if (!vm_object) {
+            err = -ENOMEM;
+            goto error;
+        }
+
+        vm_object_map(vm_object, vm_entry);
     }
-
-    if (vm_entry->vm_object)
-        vm_object_incref(vm_entry->vm_object);
 
     if (!(args->flags & MAP_FIXED))
         vm_entry->base = 0;  /* vm_space_insert() chooses the address */
 
-    struct vm_space *vm_space = &curproc->vm_space;
     if ((err = vm_space_insert(vm_space, vm_entry)))
         goto error;
 
-    if (!anon && !(args->flags & MAP_PRIVATE) && (err = vfs_map(vm_space, vm_entry)))
+    if (!anon && !regular && !(args->flags & MAP_PRIVATE) && (err = vfs_map(vm_space, vm_entry)))
         goto error;
 
     void *addr = (void *) vm_entry->base;
@@ -681,7 +693,7 @@ error:
             queue_node_remove(&curproc->vm_space.vm_entries, vm_entry->qnode);
 
         if (vm_entry->vm_object)
-            vm_object_decref(vm_entry->vm_object);
+            vm_object_unmap(vm_entry->vm_object, vm_entry);
 
         kfree(vm_entry);
     }
@@ -752,7 +764,8 @@ long sys_munmap(void *addr, size_t len)
  * @return 0, or a negative errno: `-EINVAL` if the range doesn't start on
  *         a page, for another flag, or for part of the heap or the stack;
  *         `-ENOMEM` if a page of the range isn't mapped, or if there was no
- *         memory to split a mapping
+ *         memory to split a mapping; `-EACCES` to make a file's shared
+ *         mapping writable
  */
 long sys_mprotect(void *addr, size_t len, int prot)
 {
