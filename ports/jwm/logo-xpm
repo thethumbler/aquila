@@ -1,0 +1,41 @@
+#!/bin/sh
+#
+# logo-xpm: AquilaOS's logo, the 8x8 "A" of aquilaos.com's favicon, as an
+# XPM image: <width>x<height> pixels of <background>, the logo in the
+# middle in <colour>, each of its pixels <scale> pixels wide. Run on the
+# build host by the recipe.
+#
+# usage: logo-xpm <name> <width> <height> <scale> <background> <colour>
+#
+
+name=$1 w=$2 h=$3 scale=$4 bg=$5 fg=$6
+
+awk -v name="$name" -v w="$w" -v h="$h" -v s="$scale" -v bg="$bg" -v fg="$fg" 'BEGIN {
+    # the favicon, row by row (# is the logo)
+    logo[0] = "........"
+    logo[1] = "...##..."
+    logo[2] = "..#..#.."
+    logo[3] = ".#....#."
+    logo[4] = ".#....#."
+    logo[5] = ".######."
+    logo[6] = ".#....#."
+    logo[7] = "........"
+
+    x0 = int((w - 8 * s) / 2)
+    y0 = int((h - 8 * s) / 2)
+
+    printf "/* XPM */\nstatic char *%s[] = {\n", name
+    printf "\"%d %d 2 1\",\n\". c %s\",\n\"# c %s\",\n", w, h, bg, fg
+
+    for (y = 0; y < h; y++) {
+        row = ""
+        for (x = 0; x < w; x++) {
+            lx = int((x - x0) / s); ly = int((y - y0) / s)
+            on = x >= x0 && y >= y0 && lx < 8 && ly < 8 && substr(logo[ly], lx + 1, 1) == "#"
+            row = row (on ? "#" : ".")
+        }
+        printf "\"%s\"%s\n", row, y < h - 1 ? "," : ""
+    }
+
+    print "};"
+}'

@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<!--
+  AquilaOS's desktop: JWM with a taskbar at the bottom. The colours and
+  fonts are the theme's, dark or light (aquila-theme), included below.
+  Alt+Enter opens a terminal, Alt+F1 the menu (also a right click on the
+  desktop), Alt+F4 closes a window, Alt+Tab goes to the next one.
+-->
+<JWM>
+    <Include>exec:aquila-theme jwm</Include>
+
+    <RootMenu onroot="3" height="0">
+        <Program icon="aquila.xpm" label="Terminal">aquila-theme term</Program>
+        <Program label="XTerm">xterm</Program>
+        <Separator/>
+        <Menu label="Games">
+            <Program label="Doom">xdoom</Program>
+        </Menu>
+        <Menu label="Theme">
+            <Program label="Dark">aquila-theme dark</Program>
+            <Program label="Light">aquila-theme light</Program>
+        </Menu>
+        <Separator/>
+        <Restart label="Restart JWM"/>
+        <Exit label="Log out" confirm="true"/>
+    </RootMenu>
+
+    <Group>
+        <Option>tiled</Option>
+    </Group>
+
+    <Tray x="0" y="-1" height="36" autohide="off">
+        <TrayButton icon="aquila.xpm" label="AquilaOS">root:1</TrayButton>
+        <Spacer width="6"/>
+        <Pager labeled="false"/>
+        <Spacer width="6"/>
+        <TaskList maxwidth="240"/>
+        <Dock/>
+        <Clock format="%a %d %b  %H:%M"/>
+        <Spacer width="6"/>
+    </Tray>
+
+    <IconPath>/usr/share/aquila</IconPath>
+    <!-- the logo for the windows that have no icon of their own -->
+    <DefaultIcon>aquila.xpm</DefaultIcon>
+
+    <DoubleClickSpeed>400</DoubleClickSpeed>
+    <DoubleClickDelta>2</DoubleClickDelta>
+    <FocusModel>click</FocusModel>
+    <SnapMode distance="10">border</SnapMode>
+    <MoveMode>opaque</MoveMode>
+    <ResizeMode>opaque</ResizeMode>
+
+    <Key key="Up">up</Key>
+    <Key key="Down">down</Key>
+    <Key key="Right">right</Key>
+    <Key key="Left">left</Key>
+    <Key key="Return">select</Key>
+    <Key key="Escape">escape</Key>
+    <Key mask="A" key="Return">exec:aquila-theme term</Key>
+    <Key mask="A" key="Tab">nextstacked</Key>
+    <Key mask="A" key="F4">close</Key>
+    <Key mask="A" key="#">desktop#</Key>
+    <Key mask="A" key="F1">root:1</Key>
+    <Key mask="A" key="F2">window</Key>
+    <Key mask="A" key="F10">maximize</Key>
+    <Key mask="A" key="Right">rdesktop</Key>
+    <Key mask="A" key="Left">ldesktop</Key>
+
+</JWM>

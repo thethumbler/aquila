@@ -1,0 +1,47 @@
+#!/bin/sh
+#
+# aquila-theme: the desktop's theme, the palette of aquilaos.com, dark or
+# light. The choice is kept in ~/.config/aquila/theme (dark if there's
+# none).
+#
+# usage: aquila-theme                   prints the theme
+#        aquila-theme dark|light|toggle sets it, and restarts JWM
+#        aquila-theme jwm               prints JWM's style for it (the
+#                                       <Include> of system.jwmrc)
+#        aquila-theme term [st options] opens a terminal in it
+#
+
+dir=${HOME:-/root}/.config/aquila
+file=$dir/theme
+share=/usr/share/aquila
+
+theme=dark
+[ -f "$file" ] && read -r theme < "$file"
+[ "$theme" = light ] || theme=dark
+
+set_theme()
+{
+    mkdir -p "$dir"
+    echo "$1" > "$file"
+
+    # JWM starts again, with the new style (its -reload reads the menus
+    # again, not the styles); the windows stay
+    [ -n "$DISPLAY" ] && jwm -restart 2>/dev/null
+}
+
+case "$1" in
+    "")
+        echo "$theme" ;;
+    dark|light)
+        set_theme "$1" ;;
+    toggle)
+        if [ "$theme" = dark ]; then set_theme light; else set_theme dark; fi ;;
+    jwm)
+        cat "$share/theme-$theme.jwmrc" ;;
+    term)
+        shift
+        AQUILA_THEME=$theme exec st "$@" ;;
+    *)
+        echo "usage: aquila-theme [dark | light | toggle | jwm | term [st options]]" >&2
+        exit 1 ;;
+esac

@@ -80,8 +80,10 @@ Alt+F1 to Alt+F6 switch between them. runit supervises the logins as
 services (`/etc/sv`, enabled in `/etc/service`, see `sv`); `poweroff` and
 `reboot` shut down through it, as does Ctrl+Alt+Del. `make iso` only builds
 `build/x86_64/aquila.iso`. With the ports (`make ports`), `startx` on the screen
-starts X: twm and an xterm (Ctrl+Alt+F1 to Ctrl+Alt+F6 switch terminals
-from it).
+starts X and the desktop: JWM, with a taskbar and a menu (a right click
+on the desktop, or Alt+F1), in the colours of aquilaos.com, dark or light
+(the menu's Theme, or `aquila-theme`); Alt+Enter opens a terminal.
+Ctrl+Alt+F1 to Ctrl+Alt+F6 switch terminals from it.
 
 The ISO and `make run` boot the ramdisk, read-only and the same on every
 boot. `make hdd` makes `build/x86_64/aquila.img`, a hard disk with AquilaOS
@@ -276,6 +278,8 @@ They are also published on GitHub Pages from `main`, by
 - [X] TinyX   (Xfbdev, X server on the framebuffer, port) with X.Org's
               fixed and cursor fonts, Xlib and the X Toolkit (ports)
 - [X] twm and xterm (ports), `startx`
+- [X] the desktop: JWM (port), with IBM Plex Sans and Martian Mono
+              (ports), aquilaos.com's palette, dark and light
 - [X] dwm, st and dmenu (ports), with Xft, fontconfig, FreeType and
               DejaVu fonts (ports)
 - [X] Doom    (doomgeneric with Freedoom, ports): on the framebuffer and
@@ -305,9 +309,10 @@ binutils and GCC (GPLv3) and newlib (various free licenses); the patched
 tools remain under those licenses. contrib/ and ports/ software is
 fetched from upstream and keeps its own license, among them: dash,
 netcat, runit and Freedoom: BSD; kilo: BSD 2-Clause; sbase, sdhcp, Lua,
-libtermkey, expat, dwm, st and dmenu: MIT; ncurses, xterm, curl,
+libtermkey, expat, dwm, st, dmenu and JWM: MIT; ncurses, xterm, curl,
 fontconfig and the X.Org libraries: MIT-style; X.Org's misc and cursor
 fonts: public domain; vis: ISC; zlib: zlib; FreeType: FreeType License
-or GPLv2; DejaVu fonts: Bitstream Vera; Mbed TLS: Apache 2.0 or GPLv2
+or GPLv2; DejaVu fonts: Bitstream Vera; IBM Plex Sans and Martian Mono: SIL Open
+Font License 1.1; Mbed TLS: Apache 2.0 or GPLv2
 (or later); tcc: LGPLv2.1; bash: GPLv3; TinyX: GPLv3; UnixBench and
 doomgeneric: GPLv2; Microwindows: MPL 1.1 or GPLv2.

@@ -78,10 +78,13 @@ host's `/usr/lib`.
 | expat      | 2.6.4    | library only (XML, for fontconfig)                  |
 | font-cursor-misc | 1.0.4 | the cursor font, for X servers                 |
 | font-dejavu | 2.37    | DejaVu Sans and Sans Mono (regular and bold, TrueType) in `/usr/share/fonts/dejavu`, the fonts of Xft programs |
+| font-ibm-plex-sans | 1.1.0 | IBM Plex Sans (regular, medium, semibold and bold, and their italics, TrueType) in `/usr/share/fonts/ibm-plex-sans`, the desktop's font, as on aquilaos.com |
+| font-martian-mono | 1.1.0 | Martian Mono (regular, medium and bold, standard width, TrueType) in `/usr/share/fonts/martian-mono`, the terminal's font, as on aquilaos.com |
 | font-misc-misc | 1.1.3  | the fixed width fonts of X (`fixed`, `6x13`, `9x15`, ...) in `/usr/share/fonts/X11/misc` (BDF, there is no `bdftopcf`): Unicode, and ISO 8859-1 (made by the recipe) which the usual names are |
 | fontconfig | 2.15.0   | library, `/etc/fonts`, and `fc-cache`, `fc-list` and `fc-match` in `/usr/bin` |
 | freedoom   | 0.13.0   | `/usr/share/games/doom/freedoom1.wad` (28 MB): Freedoom: Phase 1, free (BSD) game data for Doom |
 | freetype   | 2.13.3   | library only (the font rasterizer)                  |
+| jwm        | 2.3.7    | `jwm` in `/usr/bin`, the desktop that `startx` starts: title bars, a taskbar (the menu, the desktops, the windows, a clock), a wallpaper. `/etc/system.jwmrc`, its themes in aquilaos.com's palette in `/usr/share/aquila`, and `aquila-theme`, which switches between them (dark and light) and opens terminals in them. 2.3: from 2.4 on, JWM draws antialiased text only through Pango |
 | kilo       | 323d93b  | `kilo` in `/usr/bin`                                |
 | libfontenc | 1.1.8    | library only (for libXfont)                         |
 | libice     | 1.1.2    | library only (for libSM)                            |
@@ -105,9 +108,9 @@ host's `/usr/lib`.
 | mbedtls    | 3.6.7    | library only (TLS and its cryptography, for curl): the kernel's `/dev/urandom` for entropy; without its own sockets and timers |
 | microwindows | 969eae6 | `microwindows` in `/usr/bin`: Nano-X, a small windowing system on the framebuffer, and its demos (Nuklear's, nxchess and nxscribble among them; GIF images) in `/usr/lib/microwindows`; `microwindows` opens the demos' launcher, `microwindows nxterm` a terminal. The mouse is `/dev/mouse`, the keyboard the terminal it runs in, in the foreground. x86 only. MPL 1.1 or GPLv2 |
 | ncurses    | 6.6      | library only, wide characters, the vt100, ansi, linux, xterm and xterm-256color descriptions built in (no terminfo database) |
-| st         | 0.9.2    | `st` in `/usr/bin`, the terminal of dwm (Xft fonts, TERM=xterm-256color) |
+| st         | 0.9.2    | `st` in `/usr/bin`, the terminal of dwm and the desktop (Martian Mono, aquilaos.com's palette, light with `AQUILA_THEME=light`; TERM=xterm-256color) |
 | tcc        | 0.9.28rc (e23dabe) | `tcc` (also `cc`) in `/usr/bin`, compiling static programs on AquilaOS; with the C library's headers in `/usr/include` and archives in `/usr/lib`; no `-run` (no `mprotect()`) |
-| tinyx      | 1.2.0 (feab72c) | `Xfbdev` (also `X`) and `startx` (X and twm with an xterm, or `~/.xinitrc`) in `/usr/bin`: X on the framebuffer, the keyboard and mouse of a virtual terminal; clients through a Unix socket (`:0`). Its changes to X.Org's code are GPLv3 |
+| tinyx      | 1.2.0 (feab72c) | `Xfbdev` (also `X`) and `startx` (X and the desktop, JWM, or `~/.xinitrc`; twm with an xterm without JWM) in `/usr/bin`: X on the framebuffer, the keyboard and mouse of a virtual terminal; clients through a Unix socket (`:0`). Its changes to X.Org's code are GPLv3 |
 | twm        | 1.0.13.1 | `twm` in `/usr/bin`, the window manager of X        |
 | unixbench  | 6.0.1    | UnixBench's index tests in `/usr/lib/unixbench`, and `ubench` in `/usr/bin` (its own `ubench.c`): what UnixBench's `Run` does for the index, without Perl; `ubench -c 4` runs 4 copies of each test at once. No graphics tests. GPLv2 |
 | vis        | 0.9      | `vis` in `/usr/bin`, without Lua (no syntax highlighting) |

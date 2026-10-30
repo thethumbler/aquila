@@ -1,0 +1,14 @@
+diff -ruN a/src/parse.c b/src/parse.c
+--- a/src/parse.c
++++ b/src/parse.c
+@@ -1920,7 +1920,9 @@
+       close(fd);
+       return NULL;
+    }
+-   buffer = mmap(NULL, sbuf.st_size, PROT_READ, MAP_SHARED, fd, 0);
++   /* AquilaOS: private (the kernel maps regular files MAP_SHARED only
++    * for devices); read-only, it reads the same */
++   buffer = mmap(NULL, sbuf.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if(JUNLIKELY(buffer == MAP_FAILED)) {
+       close(fd);
+       return NULL;

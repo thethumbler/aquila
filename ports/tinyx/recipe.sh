@@ -56,6 +56,6 @@ EOF
     $STRIP "$DESTDIR/usr/bin/Xfbdev"
     ln -sf Xfbdev "$DESTDIR/usr/bin/X"
 
-    # X and a session (~/.xinitrc, or twm and an xterm)
+    # X and a session (~/.xinitrc, the desktop, or twm and an xterm)
     install -m 755 "$ROOT/ports/tinyx/startx" "$DESTDIR/usr/bin/startx"
 }

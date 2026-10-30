@@ -1,0 +1,78 @@
+<?xml version="1.0"?>
+<!--
+  The @theme@ theme of AquilaOS's desktop, from aquilaos.com's palette:
+  the title bars and the taskbar in its fills, the active window outlined
+  in its accent, IBM Plex Sans. Made from theme.jwmrc.in by the recipe.
+-->
+<JWM>
+    <WindowStyle decorations="flat">
+        <Font>IBM Plex Sans:size=11:weight=medium</Font>
+        <Width>4</Width>
+        <Height>30</Height>
+        <Corner>0</Corner>
+        <Foreground>@muted@</Foreground>
+        <Background>@fill@</Background>
+        <Outline>@rule@</Outline>
+        <Active>
+            <Foreground>@ink@</Foreground>
+            <Background>@fill_strong@</Background>
+            <Outline>@accent@</Outline>
+        </Active>
+    </WindowStyle>
+
+    <TrayStyle decorations="flat">
+        <Font>IBM Plex Sans:size=11</Font>
+        <Foreground>@text@</Foreground>
+        <Background>@fill@</Background>
+        <Outline>@rule@</Outline>
+    </TrayStyle>
+
+    <TaskListStyle list="desktop" group="false" decorations="flat">
+        <Font>IBM Plex Sans:size=11</Font>
+        <Foreground>@muted@</Foreground>
+        <Background>@fill@</Background>
+        <Outline>@rule@</Outline>
+        <Active>
+            <Foreground>@ink@</Foreground>
+            <Background>@fill_strong@</Background>
+            <Outline>@accent@</Outline>
+        </Active>
+    </TaskListStyle>
+
+    <PagerStyle>
+        <Foreground>@rule@</Foreground>
+        <Background>@fill@</Background>
+        <Outline>@rule@</Outline>
+        <Active>
+            <Foreground>@accent@</Foreground>
+            <Background>@fill_strong@</Background>
+        </Active>
+    </PagerStyle>
+
+    <MenuStyle decorations="flat">
+        <Font>IBM Plex Sans:size=11</Font>
+        <Foreground>@text@</Foreground>
+        <Background>@fill@</Background>
+        <Outline>@rule@</Outline>
+        <Active>
+            <Foreground>@paper@</Foreground>
+            <Background>@accent@</Background>
+        </Active>
+    </MenuStyle>
+
+    <PopupStyle>
+        <Font>IBM Plex Sans:size=10</Font>
+        <Foreground>@ink@</Foreground>
+        <Background>@fill_strong@</Background>
+        <Outline>@rule@</Outline>
+    </PopupStyle>
+
+    <ClockStyle>
+        <Font>IBM Plex Sans:size=11:weight=medium</Font>
+        <Foreground>@text@</Foreground>
+    </ClockStyle>
+
+    <Desktops width="4" height="1">
+        <Background type="scale">/usr/share/aquila/wallpaper-@theme@.xpm</Background>
+    </Desktops>
+</JWM>

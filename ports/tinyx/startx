@@ -1,8 +1,9 @@
 #!/bin/sh
 #
 # startx: X on the framebuffer (Xfbdev, :0) and a session in it, the
-# commands of ~/.xinitrc, or else twm and an xterm. X stops when the
-# session ends (the last command of .xinitrc, or the xterm).
+# commands of ~/.xinitrc, or else the desktop (JWM), or twm and an xterm
+# without it. X stops when the session ends (the last command of
+# .xinitrc, logging out of JWM, or the xterm).
 #
 # usage: startx [Xfbdev options]
 #
@@ -33,6 +34,8 @@ export DISPLAY
 
 if [ -f "$HOME/.xinitrc" ]; then
     sh "$HOME/.xinitrc"
+elif command -v jwm >/dev/null; then
+    jwm
 else
     twm &
     xterm -geometry 80x24+20+20
