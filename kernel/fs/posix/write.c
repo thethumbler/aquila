@@ -69,8 +69,10 @@ ssize_t posix_file_write(struct file *file, struct iobuf *io)
                 break;
 
             /* readers may be asleep waiting for what was just written
-             * (a pipe's ring holds less than one stdio buffer) */
-            if (file->vnode->read_queue)
+             * (a pipe's ring holds less than one stdio buffer); only if
+             * something was: a pipe's writers sleep on the same queue, and
+             * two waiting for room would wake each other up for good */
+            if (r > 0 && file->vnode->read_queue)
                 waitq_wakeup(file->vnode->read_queue);
 
             /* nothing would wake a waiting writer up: no more fits */

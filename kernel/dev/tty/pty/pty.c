@@ -176,7 +176,10 @@ static ssize_t ptm_read(struct devid *dd, off_t offset __unused, struct iobuf *i
 
     ssize_t ret = ringbuf_read_iobuf(pty->out, io->resid, io);
 
-    waitq_wakeup(&pty->pts_read_queue);
+    /* only if there's room now: the master's readers sleep on this queue
+     * too, and two waiting for output would wake each other up for good */
+    if (ret > 0)
+        waitq_wakeup(&pty->pts_read_queue);
 
     return ret;
 }
