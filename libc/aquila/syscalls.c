@@ -546,6 +546,11 @@ int mprotect(void *addr, size_t len, int prot)
     return SYSCALL(SYS_mprotect, addr, len, prot);
 }
 
+int msync(void *addr, size_t len, int flags)
+{
+    return SYSCALL(SYS_msync, addr, len, flags);
+}
+
 int sched_yield(void)
 {
     return SYSCALL(SYS_sched_yield, 0, 0, 0);
@@ -953,18 +958,14 @@ int getdtablesize(void)
 
 void sync(void)
 {
-    /* writes reach the devices before write() returns, sync empties the
-     * devices' write caches */
+    /* writes reach the devices' write caches before write() returns, what
+     * shared mappings wrote stays in the page cache: sync writes back both */
     SYSCALL(SYS_sync, 0, 0, 0);
 }
 
 int fsync(int fildes)
 {
-    /* as for sync(), for any descriptor */
-    if (fcntl(fildes, F_GETFD) == -1)
-        return -1;
-
-    return SYSCALL(SYS_sync, 0, 0, 0);
+    return SYSCALL(SYS_fsync, fildes, 0, 0);
 }
 
 int fdatasync(int fildes)
